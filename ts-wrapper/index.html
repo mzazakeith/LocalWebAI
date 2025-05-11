@@ -3,197 +3,377 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Llama.cpp Wasm Runner POC</title>
+    <title>Local WebAI - Llama.cpp WASM Runner</title>
     <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --primary-light: #dbeafe;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --border-radius: 0.5rem;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f4f7f9;
-            color: #333;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
+            line-height: 1.5;
+            color: var(--gray-800);
+            background-color: var(--gray-50);
+            padding: 1rem;
+            max-width: 1600px;
+            margin: 0 auto;
         }
-        .container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 700px;
-            margin-top: 20px;
-        }
-        h1 {
+
+        .app-header {
             text-align: center;
-            color: #2c3e50;
-            margin-bottom: 30px;
+            margin-bottom: 2rem;
         }
-        .input-group {
-            margin-bottom: 20px;
+
+        .app-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--gray-900);
+            margin-bottom: 0.5rem;
         }
+
+        .app-subtitle {
+            font-size: 1rem;
+            color: var(--gray-600);
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (min-width: 1024px) {
+            .app-container {
+                grid-template-columns: 1.5fr 1fr;
+            }
+        }
+
+        .card {
+            background-color: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .card-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--gray-800);
+        }
+
         label {
             display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #555;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: var(--gray-700);
         }
+
         input[type="text"], input[type="file"], textarea {
-            width: calc(100% - 20px);
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 16px;
-            margin-bottom: 10px;
+            width: 100%;
+            padding: 0.625rem;
+            border: 1px solid var(--gray-300);
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+            transition: border-color 0.15s ease;
+            outline: none;
         }
+
+        input[type="text"]:focus, textarea:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
         textarea {
             min-height: 120px;
             resize: vertical;
+            font-family: inherit;
         }
-        button {
-            background-color: #3498db;
-            color: white;
-            padding: 12px 20px;
+
+        .input-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .input-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.625rem 1rem;
+            font-size: 0.875rem;
+            font-weight: 500;
             border: none;
-            border-radius: 4px;
+            border-radius: var(--border-radius);
             cursor: pointer;
-            font-size: 16px;
-            transition: background-color 0.3s ease;
-            margin-right: 10px;
+            transition: background-color 0.15s ease;
+            text-align: center;
         }
-        button:hover {
-            background-color: #2980b9;
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
         }
-        button:disabled {
-            background-color: #bdc3c7;
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--primary-hover);
+        }
+
+        .btn:disabled {
+            opacity: 0.7;
             cursor: not-allowed;
         }
-        .output-area, .progress-area, .metadata-area {
-            margin-top: 20px;
-            padding: 15px;
-            border: 1px solid #eee;
-            border-radius: 4px;
-            background-color: #f9f9f9;
-            min-height: 50px;
-            white-space: pre-wrap; /* Preserve line breaks */
-            word-wrap: break-word;
+
+        .loading-stage {
+            display: flex;
+            align-items: center;
+            margin: 1rem 0;
+            padding: 0.75rem 1rem;
+            background-color: var(--primary-light);
+            border-left: 4px solid var(--primary);
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            font-weight: 500;
         }
+
+        .loading-stage.error {
+            background-color: #fee2e2;
+            border-left-color: var(--error);
+        }
+
+        .loading-stage.complete {
+            background-color: #ecfdf5;
+            border-left-color: var(--success);
+        }
+
+        .progress-container {
+            margin: 1rem 0;
+        }
+
         .progress-bar-container {
             width: 100%;
-            background-color: #e0e0e0;
-            border-radius: 4px;
-            margin-top: 5px;
-            height: 20px;
+            height: 0.625rem;
+            background-color: var(--gray-200);
+            border-radius: 1rem;
+            overflow: hidden;
         }
+
         .progress-bar {
-            width: 0%;
             height: 100%;
-            background-color: #3498db;
-            border-radius: 4px;
-            text-align: center;
-            line-height: 20px;
-            color: white;
-            font-size: 12px;
+            background-color: var(--primary);
+            border-radius: 1rem;
+            transition: width 0.3s ease;
+            color: transparent;
+            font-size: 0;
         }
-        .hidden {
-            display: none;
+
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+            color: var(--gray-600);
         }
-        .footer {
-            text-align: center;
-            margin-top: 40px;
-            color: #777;
-            font-size: 14px;
+
+        .metadata-container {
+            overflow: auto;
+            max-height: 500px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--border-radius);
+            background-color: var(--gray-50);
         }
+
         .metadata-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 10px;
         }
-        .metadata-table th, .metadata-table td {
-            border: 1px solid #ddd;
-            padding: 8px;
+
+        .metadata-table th,
+        .metadata-table td {
+            padding: 0.625rem;
             text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+            font-size: 0.875rem;
         }
+
         .metadata-table th {
-            background-color: #f2f2f2;
-            font-weight: bold;
+            background-color: var(--gray-100);
+            font-weight: 600;
         }
+
         .metadata-key {
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        .loading-stage {
-            margin-top: 10px;
-            padding: 8px 12px;
-            background-color: #e8f4fc;
-            border-left: 4px solid #3498db;
-            border-radius: 0 4px 4px 0;
             font-weight: 500;
+            color: var(--gray-800);
         }
-        .loading-stage.error {
-            background-color: #fcedeb;
-            border-left-color: #e74c3c;
+
+        .generation-output {
+            background-color: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin-top: 1rem;
+            min-height: 100px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 0.875rem;
+            line-height: 1.5;
         }
-        .loading-stage.complete {
-            background-color: #eafaf1;
-            border-left-color: #2ecc71;
+
+        .hidden {
+            display: none;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .form-row .input-group {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            color: var(--gray-500);
+            font-size: 0.875rem;
+        }
+
+        /* Animation for indeterminate progress */
+        @keyframes progress-bar-animation {
+            0% { background-position: 100% 0; }
+            100% { background-position: 0 0; }
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1023px) {
+            .card {
+                padding: 1.25rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Local Llama Runner POC</h1>
+    <header class="app-header">
+        <h1 class="app-title">Local WebAI Model Runner</h1>
+        <p class="app-subtitle">Run LLM inference directly in your browser with WebAssembly</p>
+    </header>
 
-        <div class="input-group">
-            <label for="modelUrl">Model URL (e.g., .gguf from Hugging Face):</label>
-            <input type="text" id="modelUrl" placeholder="https://huggingface.co/.../model.gguf">
-            <label for="modelFile">Or Upload Model File:</label>
-            <input type="file" id="modelFile" accept=".gguf">
-            <button id="loadModelBtn">Load Model</button>
-        </div>
+    <div class="app-container">
+        <!-- Left column: Model loading and text generation -->
+        <div class="main-column">
+            <!-- Model Loading Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Load Model</h2>
+                </div>
+                <div class="form-row">
+                    <div class="input-group">
+                        <label for="modelUrl">Model URL:</label>
+                        <input type="text" id="modelUrl" placeholder="https://huggingface.co/.../model.gguf">
+                    </div>
+                    <div class="input-group">
+                        <label for="modelFile">Upload File:</label>
+                        <input type="file" id="modelFile" accept=".gguf">
+                    </div>
+                </div>
+                <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
+                
+                <!-- Progress Tracking -->
+                <div class="progress-container">
+                    <div id="loadingStage" class="loading-stage">Not started</div>
+                    <div id="modelProgressText" class="progress-info">Waiting to start...</div>
+                    <div class="progress-bar-container">
+                        <div id="modelProgressBar" class="progress-bar" style="width: 0%">0%</div>
+                    </div>
+                </div>
+            </div>
 
-        <div class="progress-area">
-            <label>Model Loading Progress:</label>
-            <div id="loadingStage" class="loading-stage">Not started</div>
-            <div id="modelProgressText">Waiting to start...</div>
-            <div class="progress-bar-container">
-                <div id="modelProgressBar" class="progress-bar">0%</div>
+            <!-- Text Generation Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Generate Text</h2>
+                </div>
+                <div class="input-group">
+                    <label for="prompt">Prompt:</label>
+                    <textarea id="prompt" placeholder="Enter your prompt here..."></textarea>
+                </div>
+                <button id="generateBtn" class="btn btn-primary" disabled>Generate Text</button>
+                
+                <div class="output-container">
+                    <label>Response:</label>
+                    <div id="resultText" class="generation-output"></div>
+                </div>
             </div>
         </div>
 
-        <div class="metadata-area hidden" id="metadataArea">
-            <label>Model Metadata:</label>
-            <div id="modelMetadata">
-                <table class="metadata-table" id="metadataTable">
-                    <thead>
-                        <tr>
-                            <th>Property</th>
-                            <th>Value</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <!-- Metadata will be displayed here -->
-                    </tbody>
-                </table>
+        <!-- Right column: Model metadata and diagnostics -->
+        <div class="info-column">
+            <div id="metadataArea" class="card hidden">
+                <div class="card-header">
+                    <h2 class="card-title">Model Information</h2>
+                </div>
+                <div id="modelMetadata" class="metadata-container">
+                    <table class="metadata-table" id="metadataTable">
+                        <thead>
+                            <tr>
+                                <th>Property</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Metadata will be displayed here -->
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
-
-        <div class="input-group">
-            <label for="prompt">Prompt:</label>
-            <textarea id="prompt" placeholder="Enter your prompt here..."></textarea>
-            <button id="generateBtn" disabled>Generate Text</button>
-        </div>
-
-        <div class="output-area">
-            <label>Generated Text:</label>
-            <div id="resultText"></div>
-        </div>
     </div>
 
-    <div class="footer">
-        <p>Powered by Llama.cpp & WebAssembly</p>
-    </div>
+    <footer class="footer">
+        <p>Powered by Llama.cpp & WebAssembly · <a href="https://github.com/ggerganov/llama.cpp" target="_blank">llama.cpp</a></p>
+    </footer>
 
     <!-- Ensure this path is correct after compiling ts-wrapper -->
     <script type="module">
@@ -258,7 +438,7 @@
                 // If no numeric progress available, show indeterminate progress
                 modelProgressBar.style.width = '100%';
                 modelProgressBar.textContent = 'Processing...';
-                modelProgressBar.style.background = 'linear-gradient(to right, #3498db, #2ecc71, #3498db)';
+                modelProgressBar.style.background = 'linear-gradient(to right, var(--primary), var(--success), var(--primary))';
                 modelProgressBar.style.backgroundSize = '200% 100%';
                 modelProgressBar.style.animation = 'progress-bar-animation 2s linear infinite';
                 return;
@@ -271,10 +451,11 @@
             
             // Update progress bar
             modelProgressBar.style.width = `${percentage}%`;
-            modelProgressBar.textContent = `${percentage}% (${loadedMB} MB / ${totalMB} MB)`;
+            modelProgressBar.textContent = `${percentage}%`;
+            modelProgressText.textContent = `${percentage}% (${loadedMB} MB / ${totalMB} MB)`;
             
             // Reset any animation or gradient
-            modelProgressBar.style.background = '#3498db';
+            modelProgressBar.style.background = 'var(--primary)';
             modelProgressBar.style.animation = 'none';
         }
 
@@ -365,16 +546,6 @@
             return JSON.stringify(value);
         }
 
-        // Add CSS for the indeterminate progress animation
-        const style = document.createElement('style');
-        style.textContent = `
-            @keyframes progress-bar-animation {
-                0% { background-position: 100% 0; }
-                100% { background-position: 0 0; }
-            }
-        `;
-        document.head.appendChild(style);
-
         loadModelBtn.addEventListener('click', async () => {
             if (!llamaRunner) return;
             const modelUrl = modelUrlInput.value;
@@ -445,6 +616,7 @@
 
             generateBtn.disabled = true;
             resultText.textContent = ''; // Clear previous results
+            resultText.classList.add('loading');
             let currentLine = '';
 
             console.log("Starting text generation...");
@@ -460,6 +632,7 @@
                     () => {
                         // Completion
                         generateBtn.disabled = false;
+                        resultText.classList.remove('loading');
                         console.log("Text generation complete.");
                         modelProgressText.textContent = 'Generation complete.';
                     }
@@ -468,6 +641,7 @@
                 console.error("Error during text generation:", error);
                 alert(`Error generating text: ${error.message}`);
                 resultText.textContent = `Error: ${error.message}`;
+                resultText.classList.remove('loading');
                 generateBtn.disabled = false;
             }
         });
@@ -483,7 +657,6 @@
                 modelFileInput.value = ''; // Clear file if URL is typed
             }
         });
-
     </script>
 </body>
 </html>
