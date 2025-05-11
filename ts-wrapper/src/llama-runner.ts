@@ -223,7 +223,9 @@ export class LlamaRunner {
           // Pass modelFileName and modelContentType if available (from File object)
           const modelFileName = typeof source !== 'string' ? source.name : undefined;
           const modelContentType = typeof source !== 'string' ? source.type : undefined;
-          await this.modelCache.cacheModel(actualModelId, modelData, modelFileName, modelContentType);
+          // Pass undefined for the specification for now, it will be populated in a later phase.
+          // The existing originalFileName and modelContentType can still be passed for cacheEntryMeta.
+          await this.modelCache.cacheModel(actualModelId, modelData, undefined, modelFileName, modelContentType);
 
           this.worker?.postMessage({
             event: workerActions.LOAD_MODEL_DATA,
