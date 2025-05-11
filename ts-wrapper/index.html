@@ -123,6 +123,22 @@
             font-weight: bold;
             color: #2c3e50;
         }
+        .loading-stage {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background-color: #e8f4fc;
+            border-left: 4px solid #3498db;
+            border-radius: 0 4px 4px 0;
+            font-weight: 500;
+        }
+        .loading-stage.error {
+            background-color: #fcedeb;
+            border-left-color: #e74c3c;
+        }
+        .loading-stage.complete {
+            background-color: #eafaf1;
+            border-left-color: #2ecc71;
+        }
     </style>
 </head>
 <body>
@@ -139,7 +155,8 @@
 
         <div class="progress-area">
             <label>Model Loading Progress:</label>
-            <div id="modelProgressText">Not started</div>
+            <div id="loadingStage" class="loading-stage">Not started</div>
+            <div id="modelProgressText">Waiting to start...</div>
             <div class="progress-bar-container">
                 <div id="modelProgressBar" class="progress-bar">0%</div>
             </div>
@@ -183,10 +200,12 @@
         // Dynamically import the LlamaRunner. Adjust path as necessary.
         // This assumes index.html is in ts-wrapper/ and dist/ is the output directory.
         import { LlamaRunner } from './dist/llama-runner.js';
+        import { LoadingStage, getStageDescription } from './dist/loading-progress.js';
 
         const modelUrlInput = document.getElementById('modelUrl');
         const modelFileInput = document.getElementById('modelFile');
         const loadModelBtn = document.getElementById('loadModelBtn');
+        const loadingStage = document.getElementById('loadingStage');
         const modelProgressText = document.getElementById('modelProgressText');
         const modelProgressBar = document.getElementById('modelProgressBar');
         const promptInput = document.getElementById('prompt');
@@ -214,9 +233,53 @@
             alert("Error initializing LlamaRunner. Check console for details and ensure paths are correct.");
         }
 
+        // Function to update loading stage UI
+        function updateLoadingStageUI(stage, message) {
+            // Update stage indicator with appropriate styling
+            loadingStage.textContent = getStageDescription(stage);
+            loadingStage.className = 'loading-stage'; // Reset class
+            
+            // Add specific class based on stage type
+            if (stage === LoadingStage.ERROR) {
+                loadingStage.classList.add('error');
+            } else if (stage === LoadingStage.MODEL_READY) {
+                loadingStage.classList.add('complete');
+            }
+            
+            // Update progress text with detailed message if provided
+            if (message) {
+                modelProgressText.textContent = message;
+            }
+        }
+        
+        // Function to update loading progress bar
+        function updateProgressBar(loaded, total) {
+            if (!loaded || !total) {
+                // If no numeric progress available, show indeterminate progress
+                modelProgressBar.style.width = '100%';
+                modelProgressBar.textContent = 'Processing...';
+                modelProgressBar.style.background = 'linear-gradient(to right, #3498db, #2ecc71, #3498db)';
+                modelProgressBar.style.backgroundSize = '200% 100%';
+                modelProgressBar.style.animation = 'progress-bar-animation 2s linear infinite';
+                return;
+            }
+
+            // Calculate percentage and format size values
+            const percentage = Math.min(100, Math.round((loaded / total) * 100));
+            const loadedMB = (loaded / 1024 / 1024).toFixed(2);
+            const totalMB = (total / 1024 / 1024).toFixed(2);
+            
+            // Update progress bar
+            modelProgressBar.style.width = `${percentage}%`;
+            modelProgressBar.textContent = `${percentage}% (${loadedMB} MB / ${totalMB} MB)`;
+            
+            // Reset any animation or gradient
+            modelProgressBar.style.background = '#3498db';
+            modelProgressBar.style.animation = 'none';
+        }
+
         // Function to display model metadata
-        function displayModelMetadata() {
-            const metadata = llamaRunner.getModelMetadata();
+        function displayModelMetadata(metadata) {
             if (!metadata) {
                 metadataArea.classList.add('hidden');
                 return;
@@ -302,6 +365,16 @@
             return JSON.stringify(value);
         }
 
+        // Add CSS for the indeterminate progress animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes progress-bar-animation {
+                0% { background-position: 100% 0; }
+                100% { background-position: 0 0; }
+            }
+        `;
+        document.head.appendChild(style);
+
         loadModelBtn.addEventListener('click', async () => {
             if (!llamaRunner) return;
             const modelUrl = modelUrlInput.value;
@@ -324,28 +397,38 @@
             generateBtn.disabled = true;
             resultText.textContent = '';
             metadataArea.classList.add('hidden'); // Hide metadata area when loading new model
-            modelProgressText.textContent = 'Starting model load...';
-            modelProgressBar.style.width = '0%';
-            modelProgressBar.textContent = '0%';
+            
+            // Initialize progress display
+            updateLoadingStageUI(LoadingStage.PREPARING_MODEL_DATA, 'Starting model load process...');
+            updateProgressBar(0, 1);
 
             try {
                 console.log(`Loading model: ${modelId}`);
-                await llamaRunner.loadModel(source, modelId, (loaded, total) => {
-                    const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
-                    modelProgressText.textContent = `Loading: ${percentage}% (${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB)`;
-                    modelProgressBar.style.width = `${percentage}%`;
-                    modelProgressBar.textContent = `${percentage}%`;
+                await llamaRunner.loadModel(source, modelId, (progressInfo) => {
+                    // Update UI with progress information
+                    updateLoadingStageUI(progressInfo.stage, progressInfo.message);
+                    updateProgressBar(progressInfo.loaded, progressInfo.total);
+                    
+                    // If metadata becomes available, display it immediately
+                    if (progressInfo.metadata && progressInfo.stage === LoadingStage.METADATA_PARSE_COMPLETE) {
+                        displayModelMetadata(progressInfo.metadata);
+                    }
                 });
-                modelProgressText.textContent = 'Model loaded successfully!';
+                
+                // Model loaded successfully
+                updateLoadingStageUI(LoadingStage.MODEL_READY, 'Model loaded successfully!');
                 generateBtn.disabled = false;
                 
-                // Display model metadata after successful load
-                displayModelMetadata();
+                // Ensure metadata is displayed even if we missed the metadata stage update
+                const modelMetadata = llamaRunner.getModelMetadata();
+                if (modelMetadata) {
+                    displayModelMetadata(modelMetadata);
+                }
                 
                 console.log("Model loaded successfully.");
             } catch (error) {
                 console.error("Error loading model:", error);
-                modelProgressText.textContent = `Error loading model: ${error.message}`;
+                updateLoadingStageUI(LoadingStage.ERROR, `Error loading model: ${error.message}`);
                 alert(`Error loading model: ${error.message}`);
             } finally {
                 loadModelBtn.disabled = false;
@@ -403,4 +486,4 @@
 
     </script>
 </body>
-</html> 
+</html>

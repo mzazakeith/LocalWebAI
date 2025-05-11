@@ -1,8 +1,8 @@
 import { ModelCache } from './model-cache.js';
 import { ModelSpecification } from './model-spec.js'; // Import ModelSpecification
+import { ProgressCallback, ProgressInfo, LoadingStage, getStageDescription } from './loading-progress.js'; // Import progress types
 
 // Define the types for callbacks
-export type ProgressCallback = (progress: number, total: number) => void;
 export type TokenCallback = (token: string) => void;
 export type CompletionCallback = () => void;
 
@@ -29,6 +29,7 @@ const workerActions = {
   RUN_COMPLETED: 'RUN_COMPLETED',
   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
   MODEL_METADATA: 'MODEL_METADATA', // Add the new action
+  PROGRESS_UPDATE: 'PROGRESS_UPDATE', // Add progress update action
 };
 
 // GGUF version constraints for validation
@@ -42,10 +43,12 @@ export class LlamaRunner {
   private isLoadingModel = false;
   private onModelLoadedCallback: (() => void) | null = null;
   private onModelLoadErrorCallback: ((error: Error) => void) | null = null;
+  private currentProgressCallback: ProgressCallback | null = null;
   private currentTokenCallback: TokenCallback | null = null;
   private currentCompletionCallback: CompletionCallback | null = null;
   private currentModelId: string | null = null; // Keep track of the current model ID for metadata
   private currentModelMetadata: ModelSpecification | null = null; // Store current model metadata
+  private lastProgressInfo: ProgressInfo | null = null; // Track the last progress update
 
   /**
    * @param workerPath Path to the compiled worker.ts (e.g., 'worker.js')
@@ -65,7 +68,7 @@ export class LlamaRunner {
     this.worker = new Worker(this.workerPath, { type: 'module' });
 
     this.worker.onmessage = (event) => {
-      const { event: action, text, error, metadata } = event.data;
+      const { event: action, text, error, metadata, stage, ...progressDetails } = event.data;
       switch (action) {
         case workerActions.INITIALIZED:
           this.isInitialized = true;
@@ -92,9 +95,29 @@ export class LlamaRunner {
           // Handle the new metadata message
           this.handleModelMetadata(metadata as ModelSpecification);
           break;
+        case workerActions.PROGRESS_UPDATE:
+          // Handle detailed progress updates
+          if (stage && this.currentProgressCallback) {
+            const progressInfo: ProgressInfo = {
+              stage: stage as LoadingStage,
+              ...progressDetails
+            };
+            this.lastProgressInfo = progressInfo;
+            this.currentProgressCallback(progressInfo);
+          }
+          break;
         // Handle potential errors from worker
         case 'ERROR': // Assuming worker posts { event: 'ERROR', message: '...'}
             console.error('Error from worker:', error);
+            // Report error through progress callback if available
+            if (this.currentProgressCallback) {
+              this.currentProgressCallback({
+                stage: LoadingStage.ERROR,
+                message: error || 'Unknown worker error',
+                error: error || 'Unknown worker error'
+              });
+            }
+            
             if (this.isLoadingModel && this.onModelLoadErrorCallback) {
                 this.onModelLoadErrorCallback(new Error(error || 'Unknown worker error during model load'));
             }
@@ -117,6 +140,15 @@ export class LlamaRunner {
       }
       console.error(`Worker Error Details: Message: ${event.message}, Filename: ${event.filename}, Lineno: ${event.lineno}, Colno: ${event.colno}`);
 
+      // Report error through progress callback if available
+      if (this.currentProgressCallback) {
+        this.currentProgressCallback({
+          stage: LoadingStage.ERROR,
+          message: detailedErrorMessage,
+          error: detailedErrorMessage
+        });
+      }
+
       if (this.isLoadingModel && this.onModelLoadErrorCallback) {
         this.onModelLoadErrorCallback(new Error(detailedErrorMessage));
       }
@@ -136,6 +168,25 @@ export class LlamaRunner {
   }
 
   /**
+   * Reports progress to the callback with appropriate stage and details
+   */
+  private reportProgress(info: Partial<ProgressInfo>): void {
+    if (!this.currentProgressCallback) return;
+    
+    const progressInfo: ProgressInfo = {
+      stage: info.stage || (this.lastProgressInfo?.stage || LoadingStage.PREPARING_MODEL_DATA),
+      message: info.message || getStageDescription(info.stage || (this.lastProgressInfo?.stage || LoadingStage.PREPARING_MODEL_DATA)),
+      loaded: info.loaded,
+      total: info.total,
+      metadata: info.metadata || this.currentModelMetadata || undefined,
+      error: info.error
+    };
+    
+    this.lastProgressInfo = progressInfo;
+    this.currentProgressCallback(progressInfo);
+  }
+
+  /**
    * Validates and handles the model metadata received from the worker
    * @param metadata The parsed model metadata
    */
@@ -147,6 +198,12 @@ export class LlamaRunner {
     const validationError = this.validateModelMetadata(metadata);
     if (validationError) {
       console.error('Model metadata validation failed:', validationError);
+      this.reportProgress({
+        stage: LoadingStage.ERROR,
+        message: `Invalid model metadata: ${validationError}`,
+        error: `Invalid model metadata: ${validationError}`
+      });
+      
       if (this.isLoadingModel && this.onModelLoadErrorCallback) {
         this.onModelLoadErrorCallback(new Error(`Invalid model metadata: ${validationError}`));
         this.isLoadingModel = false;
@@ -155,6 +212,12 @@ export class LlamaRunner {
       }
       return;
     }
+
+    // Report that we have metadata
+    this.reportProgress({
+      metadata: metadata,
+      message: 'Model metadata parsed successfully'
+    });
 
     // If we have a current modelId, update the model's metadata in the cache
     if (this.currentModelId) {
@@ -223,10 +286,18 @@ export class LlamaRunner {
   }
 
   /**
+   * Retrieves the last reported progress information
+   * @returns The last progress info or null if no progress has been reported
+   */
+  public getLastProgressInfo(): ProgressInfo | null {
+    return this.lastProgressInfo;
+  }
+
+  /**
    * Load a GGUF model from a URL or File object.
    * @param source URL string or File object for the GGUF model.
    * @param modelId A unique ID for caching. If not provided, URL or filename+size will be used.
-   * @param progressCallback Optional callback for download/file reading progress.
+   * @param progressCallback Optional callback for detailed progress reporting.
    * @returns Promise<void> Resolves when the model is loaded and ready for inference.
    */
   public async loadModel(
@@ -241,6 +312,8 @@ export class LlamaRunner {
         throw new Error('Another model is already being loaded.');
     }
     this.isLoadingModel = true;
+    this.currentProgressCallback = progressCallback || null;
+    this.lastProgressInfo = null;
 
     return new Promise(async (resolve, reject) => {
       this.onModelLoadedCallback = resolve;
@@ -255,12 +328,25 @@ export class LlamaRunner {
 
       // 1. Try fetching from cache
       try {
+        // Report starting to load
+        this.reportProgress({
+          stage: LoadingStage.PREPARING_MODEL_DATA,
+          message: 'Checking model cache'
+        });
+        
         cachedModelInfo = await this.modelCache.getModelWithSpecificationFromCache(actualModelId);
         modelData = cachedModelInfo?.modelData || null;
         
         // If cache has metadata, store it immediately
         if (cachedModelInfo?.specification) {
           this.currentModelMetadata = cachedModelInfo.specification;
+          
+          // Report metadata available from cache
+          this.reportProgress({
+            stage: LoadingStage.METADATA_PARSE_COMPLETE,
+            message: 'Model metadata loaded from cache',
+            metadata: cachedModelInfo.specification
+          });
         }
       } catch (err) {
         console.warn('Error retrieving from cache, will load from source:', err);
@@ -268,7 +354,14 @@ export class LlamaRunner {
       }
 
       if (modelData) {
-        if (progressCallback) progressCallback(modelData.byteLength, modelData.byteLength); // Cached, so 100%
+        // Report model found in cache
+        this.reportProgress({
+          stage: LoadingStage.PREPARING_MODEL_DATA,
+          message: 'Model found in cache',
+          loaded: modelData.byteLength,
+          total: modelData.byteLength
+        });
+        
         console.log(`Model ${actualModelId} found in cache. Loading from cache.`);
         this.worker?.postMessage({
           event: workerActions.LOAD_MODEL_DATA,
@@ -282,6 +375,12 @@ export class LlamaRunner {
       console.log(`Model ${actualModelId} not found in cache. Proceeding to load from source.`);
       try {
         if (typeof source === 'string') {
+          // Report downloading
+          this.reportProgress({
+            stage: LoadingStage.DOWNLOADING_FROM_SOURCE,
+            message: 'Downloading model from URL'
+          });
+          
           const response = await fetch(source);
           if (!response.ok) throw new Error(`Failed to download model: ${response.statusText}`);
           if (!response.body) throw new Error('Response body is null');
@@ -296,7 +395,14 @@ export class LlamaRunner {
             if (done) break;
             chunks.push(value);
             receivedLength += value.length;
-            if (progressCallback) progressCallback(receivedLength, contentLength);
+            
+            // Report download progress
+            this.reportProgress({
+              stage: LoadingStage.DOWNLOADING_FROM_SOURCE,
+              loaded: receivedLength,
+              total: contentLength,
+              message: `Downloading model: ${contentLength > 0 ? Math.round((receivedLength / contentLength) * 100) : 0}%`
+            });
           }
 
           modelData = new Uint8Array(receivedLength).buffer;
@@ -310,13 +416,25 @@ export class LlamaRunner {
 
         } else {
           // Handle File object
+          // Report reading from file
+          this.reportProgress({
+            stage: LoadingStage.READING_FROM_FILE,
+            message: 'Reading model from file'
+          });
+          
           modelData = await new Promise<ArrayBuffer>((resolveFile, rejectFile) => {
             const reader = new FileReader();
             reader.onload = (e) => resolveFile(e.target?.result as ArrayBuffer);
             reader.onerror = (e) => rejectFile(reader.error || new Error('File reading error'));
             reader.onprogress = (e) => {
-              if (e.lengthComputable && progressCallback) {
-                progressCallback(e.loaded, e.total);
+              if (e.lengthComputable) {
+                // Report file reading progress
+                this.reportProgress({
+                  stage: LoadingStage.READING_FROM_FILE,
+                  loaded: e.loaded,
+                  total: e.total,
+                  message: `Reading model file: ${Math.round((e.loaded / e.total) * 100)}%`
+                });
               }
             };
             reader.readAsArrayBuffer(source);
@@ -324,6 +442,14 @@ export class LlamaRunner {
         }
 
         if (modelData) {
+          // Report preparing model data
+          this.reportProgress({
+            stage: LoadingStage.PREPARING_MODEL_DATA,
+            message: 'Preparing model data for virtual filesystem',
+            loaded: modelData.byteLength,
+            total: modelData.byteLength
+          });
+          
           // Initialize a basic specification with provenance data
           // The complete specification will be updated from worker-parsed metadata
           const initialSpec: ModelSpecification = {
@@ -350,9 +476,18 @@ export class LlamaRunner {
         }
       } catch (err) {
         console.error('Error loading model:', err);
+        
+        // Report error through progress callback
+        this.reportProgress({
+          stage: LoadingStage.ERROR,
+          message: `Error loading model: ${err instanceof Error ? err.message : String(err)}`,
+          error: err instanceof Error ? err.message : String(err)
+        });
+        
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
+        this.currentProgressCallback = null;
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -402,6 +537,7 @@ export class LlamaRunner {
       // Clear callbacks
       this.onModelLoadedCallback = null;
       this.onModelLoadErrorCallback = null;
+      this.currentProgressCallback = null;
       this.currentTokenCallback = null;
       this.currentCompletionCallback = null;
     }
