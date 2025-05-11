@@ -21,6 +21,10 @@ interface EmscriptenModule {
   FS: any; 
 }
 
+// Import the GGUF Parser
+import { parseGGUFHeader } from './gguf-parser.js';
+import { ModelSpecification } from './model-spec.js';
+
 // Define the expected structure of Module factory from main.js (compiled llama.cpp)
 // eslint-disable-next-line  @typescript-eslint/no-explicit-any
 declare function Module(settings?: Partial<EmscriptenModule>): Promise<EmscriptenModule>;
@@ -33,10 +37,12 @@ const workerActions = {
   WRITE_RESULT: 'WRITE_RESULT',
   RUN_COMPLETED: 'RUN_COMPLETED',
   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
+  MODEL_METADATA: 'MODEL_METADATA', // New action for model metadata
 };
 
 let wasmModuleInstance: EmscriptenModule;
 const modelPath = "/models/model.bin"; // Hard-coded filepath in VFS
+const headerReadSize = 1024 * 1024; // 1MB should be sufficient for most GGUF headers
 
 const decoder = new TextDecoder('utf-8');
 const punctuationBytes = [33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 58, 59, 60, 61, 62, 63, 64, 91, 92, 93, 94, 95, 96, 123, 124, 125, 126];
@@ -64,6 +70,39 @@ const stderr = (c: number) => {
   // console.error('stderr:', String.fromCharCode(c));
 };
 
+/**
+ * Parses model metadata from the loaded model file in VFS
+ */
+async function parseModelMetadata(): Promise<ModelSpecification | null> {
+  if (!wasmModuleInstance) {
+    console.error('Wasm module not initialized when trying to parse model metadata');
+    return null;
+  }
+
+  try {
+    // Read the model file header from VFS
+    const stream = wasmModuleInstance.FS.open(modelPath, 'r');
+    const headerBuffer = new Uint8Array(headerReadSize);
+    const bytesRead = wasmModuleInstance.FS.read(stream, headerBuffer, 0, headerReadSize, 0);
+    wasmModuleInstance.FS.close(stream);
+    
+    if (bytesRead < 8) { // At minimum we need magic + version (8 bytes)
+      throw new Error(`Failed to read sufficient header data: only read ${bytesRead} bytes`);
+    }
+
+    // Use only the bytes that were actually read
+    const headerData = headerBuffer.slice(0, bytesRead).buffer;
+    
+    // Parse the header data
+    const metadata = parseGGUFHeader(headerData);
+    
+    return metadata;
+  } catch (error) {
+    console.error('Error parsing model metadata:', error);
+    return null;
+  }
+}
+
 async function loadModelData(modelData: ArrayBuffer) {
   if (!wasmModuleInstance) {
     console.error('Wasm module not initialized before loading model data.');
@@ -72,12 +111,35 @@ async function loadModelData(modelData: ArrayBuffer) {
   try {
     wasmModuleInstance.FS_createPath("/", "models", true, true);
     wasmModuleInstance.FS_createDataFile('/models', 'model.bin', new Uint8Array(modelData), true, true, true);
+    
+    // Parse the model metadata after writing the file to VFS
+    const metadata = await parseModelMetadata();
+    
+    // Send metadata to main thread if successfully parsed
+    if (metadata) {
+      self.postMessage({
+        event: workerActions.MODEL_METADATA,
+        metadata
+      });
+    } else {
+      // Send error if metadata parsing failed
+      self.postMessage({
+        event: 'ERROR',
+        error: 'Failed to parse model metadata'
+      });
+    }
+
+    // Signal that initialization is complete
     self.postMessage({
       event: workerActions.INITIALIZED,
     });
   } catch (e) {
     console.error('Error loading model data into VFS:', e);
-    // Optionally, post an error message back to the main thread
+    // Post error message back to the main thread
+    self.postMessage({ 
+      event: 'ERROR', 
+      error: e instanceof Error ? e.message : String(e)
+    });
   }
 }
 
@@ -141,7 +203,11 @@ async function initWasmModule(wasmModulePath: string, wasmPath: string, modelUrl
       await loadModelData(data);
     } catch (e) {
       console.error('Error fetching or loading model from URL:', e);
-      // Optionally, post an error message back to the main thread
+      // Post error message back to the main thread
+      self.postMessage({ 
+        event: 'ERROR', 
+        error: e instanceof Error ? e.message : String(e)
+      });
     }
   } else {
      // If neither modelData nor modelUrl is provided, signal readiness (or handle as an error)

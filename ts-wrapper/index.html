@@ -69,7 +69,7 @@
             background-color: #bdc3c7;
             cursor: not-allowed;
         }
-        .output-area, .progress-area {
+        .output-area, .progress-area, .metadata-area {
             margin-top: 20px;
             padding: 15px;
             border: 1px solid #eee;
@@ -105,6 +105,24 @@
             color: #777;
             font-size: 14px;
         }
+        .metadata-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .metadata-table th, .metadata-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        .metadata-table th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .metadata-key {
+            font-weight: bold;
+            color: #2c3e50;
+        }
     </style>
 </head>
 <body>
@@ -124,6 +142,23 @@
             <div id="modelProgressText">Not started</div>
             <div class="progress-bar-container">
                 <div id="modelProgressBar" class="progress-bar">0%</div>
+            </div>
+        </div>
+
+        <div class="metadata-area hidden" id="metadataArea">
+            <label>Model Metadata:</label>
+            <div id="modelMetadata">
+                <table class="metadata-table" id="metadataTable">
+                    <thead>
+                        <tr>
+                            <th>Property</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Metadata will be displayed here -->
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -157,6 +192,8 @@
         const promptInput = document.getElementById('prompt');
         const generateBtn = document.getElementById('generateBtn');
         const resultText = document.getElementById('resultText');
+        const metadataArea = document.getElementById('metadataArea');
+        const metadataTable = document.getElementById('metadataTable').querySelector('tbody');
 
         // --- Configuration: Adjust these paths --- 
         // These paths are relative to where this index.html is served from.
@@ -177,6 +214,93 @@
             alert("Error initializing LlamaRunner. Check console for details and ensure paths are correct.");
         }
 
+        // Function to display model metadata
+        function displayModelMetadata() {
+            const metadata = llamaRunner.getModelMetadata();
+            if (!metadata) {
+                metadataArea.classList.add('hidden');
+                return;
+            }
+
+            // Clear previous metadata
+            metadataTable.innerHTML = '';
+            
+            // Display important metadata properties first
+            const priorityKeys = [
+                'modelName', 'architecture', 'quantization', 'ggufVersion',
+                'contextLength', 'embeddingLength', 'headCount', 'headCountKv'
+            ];
+            
+            // Add priority keys first
+            priorityKeys.forEach(key => {
+                if (metadata[key] !== undefined) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td class="metadata-key">${formatKey(key)}</td>
+                        <td>${formatValue(metadata[key])}</td>
+                    `;
+                    metadataTable.appendChild(row);
+                }
+            });
+            
+            // Add other metadata properties
+            for (const [key, value] of Object.entries(metadata)) {
+                // Skip priority keys already displayed and undefined values
+                if (priorityKeys.includes(key) || value === undefined) {
+                    continue;
+                }
+                
+                // Skip internal properties
+                if (key.startsWith('_') || typeof value === 'function') {
+                    continue;
+                }
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="metadata-key">${formatKey(key)}</td>
+                    <td>${formatValue(value)}</td>
+                `;
+                metadataTable.appendChild(row);
+            }
+            
+            // Show the metadata area
+            metadataArea.classList.remove('hidden');
+        }
+        
+        // Helper function to format metadata keys for display
+        function formatKey(key) {
+            // Convert camelCase to Title Case with Spaces
+            return key.replace(/([A-Z])/g, ' $1')
+                .replace(/^./, str => str.toUpperCase())
+                .replace(/\./g, ' '); // Replace dots with spaces
+        }
+        
+        // Helper function to format metadata values for display
+        function formatValue(value) {
+            if (value === null || value === undefined) {
+                return 'N/A';
+            }
+            
+            if (typeof value === 'boolean') {
+                return value ? 'Yes' : 'No';
+            }
+            
+            if (typeof value === 'number') {
+                // Format large numbers with commas
+                return value.toLocaleString();
+            }
+            
+            if (typeof value === 'string') {
+                // Truncate very long strings
+                if (value.length > 100) {
+                    return value.substring(0, 97) + '...';
+                }
+                return value;
+            }
+            
+            // For objects, arrays, etc.
+            return JSON.stringify(value);
+        }
 
         loadModelBtn.addEventListener('click', async () => {
             if (!llamaRunner) return;
@@ -199,6 +323,7 @@
             loadModelBtn.disabled = true;
             generateBtn.disabled = true;
             resultText.textContent = '';
+            metadataArea.classList.add('hidden'); // Hide metadata area when loading new model
             modelProgressText.textContent = 'Starting model load...';
             modelProgressBar.style.width = '0%';
             modelProgressBar.textContent = '0%';
@@ -213,6 +338,10 @@
                 });
                 modelProgressText.textContent = 'Model loaded successfully!';
                 generateBtn.disabled = false;
+                
+                // Display model metadata after successful load
+                displayModelMetadata();
+                
                 console.log("Model loaded successfully.");
             } catch (error) {
                 console.error("Error loading model:", error);

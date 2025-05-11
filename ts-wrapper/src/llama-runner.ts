@@ -1,4 +1,5 @@
 import { ModelCache } from './model-cache.js';
+import { ModelSpecification } from './model-spec.js'; // Import ModelSpecification
 
 // Define the types for callbacks
 export type ProgressCallback = (progress: number, total: number) => void;
@@ -27,9 +28,12 @@ const workerActions = {
   WRITE_RESULT: 'WRITE_RESULT',
   RUN_COMPLETED: 'RUN_COMPLETED',
   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
+  MODEL_METADATA: 'MODEL_METADATA', // Add the new action
 };
 
-// const MAX_CACHEABLE_SIZE = 1 * 1024 * 1024 * 1024; // 1 GiB -- This is no longer needed as ModelCache handles chunking.
+// GGUF version constraints for validation
+const MIN_SUPPORTED_GGUF_VERSION = 2;
+const MAX_SUPPORTED_GGUF_VERSION = 3;
 
 export class LlamaRunner {
   private worker: Worker | null = null;
@@ -40,6 +44,8 @@ export class LlamaRunner {
   private onModelLoadErrorCallback: ((error: Error) => void) | null = null;
   private currentTokenCallback: TokenCallback | null = null;
   private currentCompletionCallback: CompletionCallback | null = null;
+  private currentModelId: string | null = null; // Keep track of the current model ID for metadata
+  private currentModelMetadata: ModelSpecification | null = null; // Store current model metadata
 
   /**
    * @param workerPath Path to the compiled worker.ts (e.g., 'worker.js')
@@ -59,7 +65,7 @@ export class LlamaRunner {
     this.worker = new Worker(this.workerPath, { type: 'module' });
 
     this.worker.onmessage = (event) => {
-      const { event: action, text, error } = event.data;
+      const { event: action, text, error, metadata } = event.data;
       switch (action) {
         case workerActions.INITIALIZED:
           this.isInitialized = true;
@@ -81,6 +87,10 @@ export class LlamaRunner {
           }
           this.currentTokenCallback = null;
           this.currentCompletionCallback = null;
+          break;
+        case workerActions.MODEL_METADATA:
+          // Handle the new metadata message
+          this.handleModelMetadata(metadata as ModelSpecification);
           break;
         // Handle potential errors from worker
         case 'ERROR': // Assuming worker posts { event: 'ERROR', message: '...'}
@@ -126,6 +136,93 @@ export class LlamaRunner {
   }
 
   /**
+   * Validates and handles the model metadata received from the worker
+   * @param metadata The parsed model metadata
+   */
+  private async handleModelMetadata(metadata: ModelSpecification): Promise<void> {
+    // Store the metadata locally
+    this.currentModelMetadata = metadata;
+
+    // Validate the metadata
+    const validationError = this.validateModelMetadata(metadata);
+    if (validationError) {
+      console.error('Model metadata validation failed:', validationError);
+      if (this.isLoadingModel && this.onModelLoadErrorCallback) {
+        this.onModelLoadErrorCallback(new Error(`Invalid model metadata: ${validationError}`));
+        this.isLoadingModel = false;
+        this.onModelLoadedCallback = null;
+        this.onModelLoadErrorCallback = null;
+      }
+      return;
+    }
+
+    // If we have a current modelId, update the model's metadata in the cache
+    if (this.currentModelId) {
+      try {
+        // Retrieve the model data from cache
+        const cachedModelData = await this.modelCache.getModelFromCache(this.currentModelId);
+        
+        if (cachedModelData) {
+          // Add provenance information
+          if (typeof this.currentModelId === 'string' && this.currentModelId.startsWith('http')) {
+            metadata.sourceURL = this.currentModelId;
+          }
+          metadata.downloadDate = new Date().toISOString();
+          
+          // Update the cache with the new metadata
+          await this.modelCache.cacheModel(this.currentModelId, cachedModelData, metadata);
+          console.log('Updated model cache with metadata for:', this.currentModelId);
+        }
+      } catch (err) {
+        console.warn('Failed to update model cache with metadata:', err);
+        // Non-fatal error, continue with model load
+      }
+    }
+  }
+
+  /**
+   * Validates the model metadata to ensure compatibility
+   * @param metadata The model metadata to validate
+   * @returns A string with the error message if validation fails, or null if successful
+   */
+  private validateModelMetadata(metadata: ModelSpecification): string | null {
+    // Check GGUF version compatibility
+    if (metadata.ggufVersion === undefined) {
+      return 'Missing GGUF version information';
+    }
+    
+    if (metadata.ggufVersion < MIN_SUPPORTED_GGUF_VERSION || 
+        metadata.ggufVersion > MAX_SUPPORTED_GGUF_VERSION) {
+      return `Unsupported GGUF version: ${metadata.ggufVersion}. Supported versions: ${MIN_SUPPORTED_GGUF_VERSION}-${MAX_SUPPORTED_GGUF_VERSION}`;
+    }
+    
+    // Other potential validations:
+    // 1. Check if critical fields are present (architecture, context length, etc.)
+    if (!metadata.architecture) {
+      console.warn('Model metadata is missing architecture information');
+      // Not fatal, but worth warning about
+    }
+    
+    // 2. Validate context length if present (e.g., must be a reasonable value)
+    if (metadata.contextLength !== undefined) {
+      if (metadata.contextLength < 1 || metadata.contextLength > 32768) {
+        return `Invalid context length: ${metadata.contextLength}. Expected a value between 1 and 32768`;
+      }
+    }
+    
+    // All validations passed
+    return null;
+  }
+
+  /**
+   * Retrieves the current model's metadata
+   * @returns The current model's metadata or null if no model is loaded
+   */
+  public getModelMetadata(): ModelSpecification | null {
+    return this.currentModelMetadata;
+  }
+
+  /**
    * Load a GGUF model from a URL or File object.
    * @param source URL string or File object for the GGUF model.
    * @param modelId A unique ID for caching. If not provided, URL or filename+size will be used.
@@ -150,10 +247,26 @@ export class LlamaRunner {
       this.onModelLoadErrorCallback = reject;
 
       const actualModelId = modelId || (typeof source === 'string' ? source : `${source.name}-${source.size}`);
+      this.currentModelId = actualModelId; // Store current model ID for metadata handling
+      this.currentModelMetadata = null; // Reset metadata for new model
+      
       let modelData: ArrayBuffer | null = null;
+      let cachedModelInfo = null;
 
       // 1. Try fetching from cache
-      modelData = await this.modelCache.getModelFromCache(actualModelId);
+      try {
+        cachedModelInfo = await this.modelCache.getModelWithSpecificationFromCache(actualModelId);
+        modelData = cachedModelInfo?.modelData || null;
+        
+        // If cache has metadata, store it immediately
+        if (cachedModelInfo?.specification) {
+          this.currentModelMetadata = cachedModelInfo.specification;
+        }
+      } catch (err) {
+        console.warn('Error retrieving from cache, will load from source:', err);
+        modelData = null;
+      }
+
       if (modelData) {
         if (progressCallback) progressCallback(modelData.byteLength, modelData.byteLength); // Cached, so 100%
         console.log(`Model ${actualModelId} found in cache. Loading from cache.`);
@@ -211,21 +324,21 @@ export class LlamaRunner {
         }
 
         if (modelData) {
-          // The new ModelCache handles chunking, so the explicit size check is removed.
-          // if (modelData.byteLength < MAX_CACHEABLE_SIZE) { // Old check
-          //   await this.modelCache.cacheModel(actualModelId, modelData);
-          // } else {
-          //   console.warn(
-          //     `Model ${actualModelId} is too large to cache (${(modelData.byteLength / (1024*1024)).toFixed(2)} MB). Max cacheable size: ${(MAX_CACHEABLE_SIZE / (1024*1024)).toFixed(2)} MB. Skipping cache.`
-          //   );
-          // }
+          // Initialize a basic specification with provenance data
+          // The complete specification will be updated from worker-parsed metadata
+          const initialSpec: ModelSpecification = {
+            downloadDate: new Date().toISOString(),
+            fileName: typeof source !== 'string' ? source.name : undefined,
+            fileSize: modelData.byteLength,
+            sourceURL: typeof source === 'string' ? source : undefined
+          };
 
           // Pass modelFileName and modelContentType if available (from File object)
           const modelFileName = typeof source !== 'string' ? source.name : undefined;
           const modelContentType = typeof source !== 'string' ? source.type : undefined;
-          // Pass undefined for the specification for now, it will be populated in a later phase.
-          // The existing originalFileName and modelContentType can still be passed for cacheEntryMeta.
-          await this.modelCache.cacheModel(actualModelId, modelData, undefined, modelFileName, modelContentType);
+          
+          // Store with initial specification - will be updated later with parsed data
+          await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
 
           this.worker?.postMessage({
             event: workerActions.LOAD_MODEL_DATA,
