@@ -179,40 +179,76 @@ function reportProgress(stage: LoadingStage, details: any = {}) {
   });
 }
 
-// --- Stubbed Implementations for Phase B ---
+// --- Actual Implementations for Phase E ---
 
-async function initWasmModule(wasmModulePath: string, wasmPath: string) {
-  console.log(`[NodeWorker] Stub: initWasmModule called with modulePath: ${wasmModulePath}, wasmPath: ${wasmPath}`);
+async function initWasmModule(wasmNodeModulePath: string, wasmNodePath: string) {
+  console.log(`[NodeWorker] Initializing Wasm module from: ${wasmNodeModulePath}, Wasm file: ${wasmNodePath}`);
   reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
-    message: 'Stub: Initializing WebAssembly module'
+    message: 'Initializing WebAssembly module for Node.js'
   });
-  
-  // Simulate success for Phase B structure testing
-  // In later phases, this will perform the actual import and instantiation
-  wasmModuleInstance = { 
-      callMain: (args) => console.log(`[NodeWorker] Stub: callMain(${JSON.stringify(args)})`), 
-      FS_createPath: (p, n) => console.log(`[NodeWorker] Stub: FS_createPath(${p}, ${n})`), 
-      FS_createDataFile: (p, n) => console.log(`[NodeWorker] Stub: FS_createDataFile(${p}, ${n})`), 
-      FS: { 
-          open: () => ({ /* stub stream */ }), 
-          read: () => 0, 
-          close: () => {}, 
-          stat: () => ({ /* stub stat */ }),
-          unlink: () => console.log("[NodeWorker] Stub: FS.unlink()")
-      },
-      TTY: { register: () => {} }, // Add stubs for expected properties
-      noInitialRun: true,
-      preInit: []
-  }; 
-  console.log("[NodeWorker] Stub: Wasm module instance created.");
-  
-  // No model is loaded yet in this stub
-  reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
-    message: 'Stub: Wasm Module Initialized (No Model Loaded)'
-  });
-  
-  // Send INITIALIZED immediately after stubbing for Phase B testing
-  postMessageToParent({ event: workerActions.INITIALIZED });
+
+  const emscriptenModuleConfig: Partial<EmscriptenModule> = {
+    noInitialRun: true,
+    preInit: [() => {
+      if (!emscriptenModuleConfig.FS || !emscriptenModuleConfig.TTY) {
+        console.error('[NodeWorker] Emscripten FS or TTY not available on config during preInit.');
+        return;
+      }
+      emscriptenModuleConfig.TTY.register(emscriptenModuleConfig.FS.makedev(5, 0), {
+        get_char: (tty: any) => stdin(),
+        put_char: (tty: any, val: number) => { tty.output.push(val); stdout(val); },
+        flush: (tty: any) => tty.output = [],
+      });
+      emscriptenModuleConfig.TTY.register(emscriptenModuleConfig.FS.makedev(6, 0), {
+        get_char: (tty: any) => stdin(),
+        put_char: (tty: any, val: number) => { tty.output.push(val); stderr(val); },
+        flush: (tty: any) => tty.output = [],
+      });
+    }],
+    locateFile: (path: string) => {
+      if (path.endsWith('.wasm')) {
+        // wasmNodePath should be an absolute path or resolvable relative to the JS glue file.
+        // For Node.js, directly using the provided wasmNodePath is usually correct if it's absolute
+        // or relative to where the worker process is started from, assuming the glue file can find it.
+        // Emscripten's default locateFile often expects the .wasm file to be sibling to the main .js glue file.
+        // If wasmNodePath is absolute, it should just work.
+        // If relative, it needs to be relative to the wasmNodeModulePath's directory.
+        // For now, we assume wasmNodePath is correctly provided to be resolvable.
+        return wasmNodePath;
+      }
+      return path;
+    },
+    // Other configurations like print, printErr could be routed here if needed
+    // print: console.log,
+    // printErr: console.error,
+  };
+
+  try {
+    // Dynamically import the Emscripten-generated JS glue file
+    // The import path should be resolvable by Node.js (e.g., absolute path or correct relative path)
+    const ModuleFactory = (await import(wasmNodeModulePath)).default;
+    if (typeof ModuleFactory !== 'function') {
+        throw new WasmError('Wasm module factory not found or not a function. Check Emscripten build (MODULARIZE, EXPORT_ES6).');
+    }
+
+    wasmModuleInstance = await ModuleFactory(emscriptenModuleConfig);
+    
+    if (!wasmModuleInstance || typeof wasmModuleInstance.callMain !== 'function') {
+        throw new WasmError('Failed to instantiate Wasm module or callMain is not available.');
+    }
+
+    console.log('[NodeWorker] Wasm module instance created successfully.');
+    reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
+      message: 'WebAssembly module initialized (No model loaded yet)'
+    });
+    postMessageToParent({ event: workerActions.INITIALIZED }); // Signal Wasm module is ready
+
+  } catch (error) {
+    console.error('[NodeWorker] Error during Wasm module initialization:', error);
+    const errInstance = error instanceof Error ? error : new WasmError(String(error));
+    reportError(errInstance);
+    // Do not proceed if Wasm initialization fails critically
+  }
 }
 
 async function loadModelData(modelPathFromArgs: string) {
@@ -269,73 +305,55 @@ async function loadModelData(modelPathFromArgs: string) {
         );
     }
     
-    // Validate GGUF Header (using the Buffer directly, ArrayBuffer view is compatible)
-    // Note: validateGGUFHeader itself might need adjustment if it strictly requires ArrayBuffer
-    // For now, assume it works or adapt it later. We use slice().buffer for safety.
     try {
-        // Create an ArrayBuffer view from the relevant part of the Buffer
         const headerArrayBuffer = headerBuffer.buffer.slice(headerBuffer.byteOffset, headerBuffer.byteOffset + bytesRead);
         validateGGUFHeader(headerArrayBuffer);
     } catch (error) {
-      // If validation fails, report the specific error and stop
       reportError(error instanceof Error ? error : new GGUFParsingError(String(error)));
-      return; // Stop processing this model
+      return; 
     }
     
     console.log('[NodeWorker] GGUF header validated successfully.');
     reportProgress(LoadingStage.PREPARING_MODEL_DATA, { 
       message: 'Validated model header. Reading full model file...',
-      loaded: bytesRead, // Report header bytes as initial loaded count
+      loaded: bytesRead, 
       total: totalSize
     });
 
-    // Check for cancellation before reading the full file
     if (checkCancellation()) {
       cleanupAfterCancellation();
       return;
     }
 
-    // 4. Read the entire file into a buffer
-    // TODO: Implement streaming for large files to avoid memory issues
     console.log(`[NodeWorker] Reading full file (${(totalSize / (1024*1024)).toFixed(2)} MB) into buffer...`);
     modelDataBuffer = await fileHandle.readFile();
     console.log(`[NodeWorker] File read complete. Buffer size: ${modelDataBuffer.byteLength}`);
 
-    // Check buffer size matches stats
     if (modelDataBuffer.byteLength !== totalSize) {
         console.warn(`[NodeWorker] Warning: Read buffer size (${modelDataBuffer.byteLength}) does not match file stat size (${totalSize}). Proceeding anyway.`);
     }
 
-    // Report completion of file reading phase (approximated)
     reportProgress(LoadingStage.PREPARING_MODEL_DATA, { 
       message: 'Model file read into memory',
-      loaded: totalSize, // Mark as fully loaded into buffer
+      loaded: totalSize, 
       total: totalSize
     });
 
-    // Check for cancellation before writing to VFS
     if (checkCancellation()) {
       cleanupAfterCancellation();
       return;
     }
 
-    // 5. Write the model data to VFS
     reportProgress(LoadingStage.VFS_WRITE_START, { 
         message: 'Writing model to virtual filesystem',
         total: totalSize
     });
     
     try {
-      // Ensure VFS directory exists
       wasmModuleInstance.FS_createPath("/", "models", true, true);
-      
-      // Write the buffer (must be Uint8Array for FS_createDataFile)
-      // Create a Uint8Array view of the Node.js Buffer without copying memory
       const modelDataView = new Uint8Array(modelDataBuffer.buffer, modelDataBuffer.byteOffset, modelDataBuffer.byteLength);
       wasmModuleInstance.FS_createDataFile('/models', 'model.bin', modelDataView, true, true, true);
-      
       console.log('[NodeWorker] Successfully wrote model to VFS path:', modelPath);
-      
     } catch (error) {
       throw new VFSError(
         `Failed to write model data to VFS: ${error instanceof Error ? error.message : String(error)}`,
@@ -343,7 +361,6 @@ async function loadModelData(modelPathFromArgs: string) {
       );
     }
     
-    // Release reference to the large buffer now that it's in VFS
     modelDataBuffer = null; 
 
     reportProgress(LoadingStage.VFS_WRITE_COMPLETE, { 
@@ -352,29 +369,24 @@ async function loadModelData(modelPathFromArgs: string) {
         total: totalSize
     });
 
-    // Check for cancellation after writing to VFS
     if (checkCancellation()) {
       cleanupAfterCancellation();
       return;
     }
 
-    // 6. Parse Metadata (from VFS)
     let metadata: ModelSpecification | null = null;
     try {
-      metadata = await parseModelMetadata(); // Call the actual implementation now
+      metadata = await parseModelMetadata(); 
     } catch (error) {
       console.warn("[NodeWorker] Metadata parsing failed, continuing without full metadata:", error);
-      // Report the error but allow initialization to continue if possible
       reportError(error instanceof Error ? error : new GGUFParsingError(String(error)), LoadingStage.METADATA_PARSE_COMPLETE); 
     }
     
-    // Check for cancellation after metadata parsing
     if (checkCancellation()) {
         cleanupAfterCancellation();
         return;
     }
 
-    // 7. Report completion
     reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
       message: 'Model ready for inference',
       metadata: metadata || undefined
@@ -384,8 +396,7 @@ async function loadModelData(modelPathFromArgs: string) {
       postMessageToParent({ event: workerActions.MODEL_METADATA, metadata });
     }
 
-    // Signal that the model is loaded and ready
-    postMessageToParent({ event: workerActions.INITIALIZED });
+    postMessageToParent({ event: workerActions.INITIALIZED }); // Signal model is loaded and VFS ready
 
     reportProgress(LoadingStage.MODEL_READY, {
       message: 'Model loaded and ready',
@@ -398,7 +409,6 @@ async function loadModelData(modelPathFromArgs: string) {
     console.error('[NodeWorker] Error during model loading:', error);
     reportError(error instanceof Error ? error : new Error(String(error)));
   } finally {
-    // Ensure the file handle is closed
     if (fileHandle) {
       try {
         await fileHandle.close();
@@ -407,14 +417,11 @@ async function loadModelData(modelPathFromArgs: string) {
         console.error(`[NodeWorker] Error closing file handle: ${closeError}`);
       }
     }
-    // Release buffer reference if it wasn't already
     modelDataBuffer = null;
-    // Reset cancellation state for the next operation
     resetCancellationState(); 
   }
 }
 
-// Un-stub: Keep the actual implementation that reads from VFS
 async function parseModelMetadata(): Promise<ModelSpecification | null> {
   console.log("[NodeWorker] Parsing model metadata from VFS...");
   if (!wasmModuleInstance) {
@@ -458,10 +465,7 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
 
     const headerData = headerBuffer.slice(0, bytesRead).buffer; // Get ArrayBuffer view
 
-    // Validate first (reuse existing validation)
     validateGGUFHeader(headerData);
-
-    // Parse
     const metadata = parseGGUFHeader(headerData);
 
     reportProgress(LoadingStage.METADATA_PARSE_COMPLETE, {
@@ -471,45 +475,90 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
 
     return metadata;
   } catch (error) {
-    // Throw the error to be caught by the caller (loadModelData)
     console.error("[NodeWorker] Error parsing metadata from VFS:", error);
     if (error instanceof Error) {
-        throw error; // Re-throw specific errors
+        throw error; 
     } else {
-        throw new GGUFParsingError(String(error)); // Wrap unknown errors
+        throw new GGUFParsingError(String(error)); 
     }
   }
 }
 
-// Keep runMain stubbed for Phase C
 function runMain(prompt: string, params: Record<string, any>) {
-  console.log(`[NodeWorker] Stub: runMain called with prompt: "${prompt}", params:`, params);
-  if (!wasmModuleInstance) {
-    reportError(new WasmError('Wasm module not ready (stub)'));
+  console.log(`[NodeWorker] Running main with prompt: "${prompt}", params:`, params);
+  if (!wasmModuleInstance || typeof wasmModuleInstance.callMain !== 'function') {
+    reportError(new WasmError('Wasm module not ready or callMain not available.'));
     return;
   }
 
-  // Simulate generation
-  const stubOutput = `\nStub response to prompt: "${prompt}"`;
-  let i = 0;
-  const interval = setInterval(() => {
-      if (i < stubOutput.length) {
-          stdout(stubOutput.charCodeAt(i));
-          i++;
-      } else {
-          clearInterval(interval);
-          // Ensure buffer is flushed
-          if (stdoutBuffer.length > 0) {
-            const text = decoder.decode(new Uint8Array(stdoutBuffer));
-            stdoutBuffer.length = 0;
-            postMessageToParent({ event: workerActions.WRITE_RESULT, text });
-          }
-          postMessageToParent({ event: workerActions.RUN_COMPLETED });
-      }
-  }, 20); // Simulate token streaming speed
-}
+  try {
+    const args: string[] = [
+      // Default llama.cpp args for inference
+      "--model", modelPath, // Model path in VFS
+      "--prompt", prompt,
+      // Basic sensible defaults, can be overridden by params
+      "--n-predict", (params.n_predict || 256).toString(), // Max tokens to predict
+      "--ctx-size", (params.ctx_size || 512).toString(),    // Context size
+      "--batch-size", (params.batch_size || 512).toString(), // Batch size for prompt processing
+      "--temp", (params.temp || 0.8).toString(),             // Temperature
+      "--top-k", (params.top_k || 40).toString(),
+      "--top-p", (params.top_p || 0.9).toString(),
+      "--simple-io", // Ensures output is plain text tokens
+      "--log-disable" // Reduce verbose logging from llama.cpp to stdout
+    ];
 
-// --- End Stubbed Implementations ---
+    if (params.chatml) {
+      args.push("--chatml");
+    }
+
+    // By default, llama.cpp main example displays the prompt. 
+    // The --no-display-prompt flag in the original worker seems to be a custom patch or older version behavior.
+    // Standard llama.cpp main usually includes prompt unless specific flags are used to suppress parts of output.
+    // If `no_display_prompt` is true, we aim to suppress it. Llama.cpp doesn't have a direct flag for this for simple-io.
+    // This might need more complex output filtering if the Wasm doesn't support suppressing it directly.
+    // For now, we assume the main Wasm build behaves as expected or we filter on JS side.
+    // The browser worker used --no-display-prompt. If this is from a patch, the Node build needs it too.
+    // Assuming standard llama.cpp args for now.
+    if (params.no_display_prompt === true) {
+        // This flag might not exist in standard llama.cpp `main` example.
+        // If it's custom, it needs to be supported by the Wasm build.
+        // args.push("--no-display-prompt"); 
+        console.warn('[NodeWorker] no_display_prompt: true is set, but standard llama.cpp main might still display prompt with simple-io.');
+    }
+
+    // Threading: Use os.cpus().length for Node.js environment
+    // The Emscripten flags -s USE_PTHREADS=1 and -s PTHREAD_POOL_SIZE must be active in the build.
+    // The llama.cpp CMakeLists.txt usually handles -pthread for native builds.
+    // For Emscripten, this enables pthreads. Llama.cpp itself will use these if compiled with thread support.
+    const threadCount = (os.cpus() || []).length > 1 ? (os.cpus() || []).length : 2; // Default to 2 if os.cpus() is weird
+    args.push("--threads", threadCount.toString());
+    console.log(`[NodeWorker] Using --threads ${threadCount}`);
+
+    // Add other parameters as needed from GenerateTextParams
+    if (params.n_gpu_layers !== undefined && params.n_gpu_layers > 0) {
+        // GPU layers are typically not supported in browser/Node Wasm builds of llama.cpp
+        // but we include the arg if passed, in case a special build supports it.
+        // args.push("-ngl", params.n_gpu_layers.toString());
+        console.warn('[NodeWorker] n_gpu_layers specified, but typically not effective in Node.js Wasm builds.');
+    }
+
+    console.log('[NodeWorker] Calling wasmModuleInstance.callMain with args:', args);
+    wasmModuleInstance.callMain(args);
+
+  } catch (e) {
+    const error = e instanceof Error ? e : new ModelInitializationError('Error running model inference');
+    console.error('[NodeWorker] Error executing callMain:', error);
+    reportError(error);
+  } finally {
+    // Ensure any remaining buffered output is sent after callMain completes or errors
+    if (stdoutBuffer.length > 0) {
+      const text = decoder.decode(new Uint8Array(stdoutBuffer));
+      stdoutBuffer.length = 0;
+      postMessageToParent({ event: workerActions.WRITE_RESULT, text });
+    }
+    postMessageToParent({ event: workerActions.RUN_COMPLETED });
+  }
+}
 
 // Main message handler for the worker
 if (!parentPort) {
