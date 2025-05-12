@@ -3,6 +3,8 @@
 // Node.js worker threads imports
 import { parentPort, isMainThread, workerData, TransferListItem } from 'worker_threads';
 import os from 'os'; // Needed for potential hardware concurrency later
+import fs from 'fs/promises'; // <-- Import fs.promises
+import { constants as fsConstants } from 'fs'; // <-- Import fs constants
 
 // Type definition for Emscripten module (adjust as needed)
 interface EmscriptenModule {
@@ -214,77 +216,272 @@ async function initWasmModule(wasmModulePath: string, wasmPath: string) {
 }
 
 async function loadModelData(modelPathFromArgs: string) {
-  console.log(`[NodeWorker] Stub: loadModelData called with path: ${modelPathFromArgs}`);
+  console.log(`[NodeWorker] Loading model from path: ${modelPathFromArgs}`);
   if (!wasmModuleInstance) {
-    reportError(new WasmError('Wasm module not initialized (stub)'));
+    reportError(new WasmError('Wasm module not initialized before loading model data.'));
     return;
   }
   
-  if (checkCancellation()) {
+  let fileHandle: fs.FileHandle | null = null;
+  let modelDataBuffer: Buffer | null = null; // Use Node.js Buffer initially
+  
+  try {
+    // Check for cancellation before opening file
+    if (checkCancellation()) {
       cleanupAfterCancellation();
       return;
-  }
+    }
 
-  reportProgress(LoadingStage.VFS_WRITE_START, { message: 'Stub: Reading model file header' });
-  
-  // Simulate reading header and validation success
-  await new Promise(resolve => setTimeout(resolve, 50)); // Short delay
-  
-  if (checkCancellation()) { cleanupAfterCancellation(); return; }
+    reportProgress(LoadingStage.PREPARING_MODEL_DATA, { message: 'Opening model file' });
+    
+    // 1. Open the file
+    try {
+      fileHandle = await fs.open(modelPathFromArgs, fsConstants.O_RDONLY);
+    } catch (err: any) {
+      throw new FileError(
+        `Failed to open model file: ${err.message || 'Unknown error'}`,
+        modelPathFromArgs
+      );
+    }
 
-  reportProgress(LoadingStage.VFS_WRITE_PROGRESS, { message: 'Stub: Writing model to VFS' });
-  await new Promise(resolve => setTimeout(resolve, 100)); // Simulate write time
+    // Check for cancellation after opening file
+    if (checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
 
-  if (checkCancellation()) { cleanupAfterCancellation(); return; }
-  
-  reportProgress(LoadingStage.VFS_WRITE_COMPLETE, { message: 'Stub: Model written to VFS' });
-  
-  // Simulate metadata parsing
-  const metadata: ModelSpecification = await parseModelMetadata(); // Call the stubbed version
-  
-  if (checkCancellation()) { cleanupAfterCancellation(); return; }
+    // 2. Get file stats for size
+    const stats = await fileHandle.stat();
+    const totalSize = stats.size;
+    reportProgress(LoadingStage.PREPARING_MODEL_DATA, { 
+      message: 'Reading model file header',
+      total: totalSize
+    });
 
-  reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
-    message: 'Stub: Model Ready for Inference',
-    metadata: metadata
-  });
+    // 3. Read header for validation
+    const headerBuffer = Buffer.alloc(headerReadSize);
+    const { bytesRead } = await fileHandle.read(headerBuffer, 0, headerReadSize, 0);
 
-  if (metadata) {
+    if (bytesRead < 8) { // Basic check for enough data
+        throw new GGUFParsingError(
+          `Failed to read sufficient header data: only read ${bytesRead} bytes`,
+          { bytesRead, minimumRequired: 8 }
+        );
+    }
+    
+    // Validate GGUF Header (using the Buffer directly, ArrayBuffer view is compatible)
+    // Note: validateGGUFHeader itself might need adjustment if it strictly requires ArrayBuffer
+    // For now, assume it works or adapt it later. We use slice().buffer for safety.
+    try {
+        // Create an ArrayBuffer view from the relevant part of the Buffer
+        const headerArrayBuffer = headerBuffer.buffer.slice(headerBuffer.byteOffset, headerBuffer.byteOffset + bytesRead);
+        validateGGUFHeader(headerArrayBuffer);
+    } catch (error) {
+      // If validation fails, report the specific error and stop
+      reportError(error instanceof Error ? error : new GGUFParsingError(String(error)));
+      return; // Stop processing this model
+    }
+    
+    console.log('[NodeWorker] GGUF header validated successfully.');
+    reportProgress(LoadingStage.PREPARING_MODEL_DATA, { 
+      message: 'Validated model header. Reading full model file...',
+      loaded: bytesRead, // Report header bytes as initial loaded count
+      total: totalSize
+    });
+
+    // Check for cancellation before reading the full file
+    if (checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
+    // 4. Read the entire file into a buffer
+    // TODO: Implement streaming for large files to avoid memory issues
+    console.log(`[NodeWorker] Reading full file (${(totalSize / (1024*1024)).toFixed(2)} MB) into buffer...`);
+    modelDataBuffer = await fileHandle.readFile();
+    console.log(`[NodeWorker] File read complete. Buffer size: ${modelDataBuffer.byteLength}`);
+
+    // Check buffer size matches stats
+    if (modelDataBuffer.byteLength !== totalSize) {
+        console.warn(`[NodeWorker] Warning: Read buffer size (${modelDataBuffer.byteLength}) does not match file stat size (${totalSize}). Proceeding anyway.`);
+    }
+
+    // Report completion of file reading phase (approximated)
+    reportProgress(LoadingStage.PREPARING_MODEL_DATA, { 
+      message: 'Model file read into memory',
+      loaded: totalSize, // Mark as fully loaded into buffer
+      total: totalSize
+    });
+
+    // Check for cancellation before writing to VFS
+    if (checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
+    // 5. Write the model data to VFS
+    reportProgress(LoadingStage.VFS_WRITE_START, { 
+        message: 'Writing model to virtual filesystem',
+        total: totalSize
+    });
+    
+    try {
+      // Ensure VFS directory exists
+      wasmModuleInstance.FS_createPath("/", "models", true, true);
+      
+      // Write the buffer (must be Uint8Array for FS_createDataFile)
+      // Create a Uint8Array view of the Node.js Buffer without copying memory
+      const modelDataView = new Uint8Array(modelDataBuffer.buffer, modelDataBuffer.byteOffset, modelDataBuffer.byteLength);
+      wasmModuleInstance.FS_createDataFile('/models', 'model.bin', modelDataView, true, true, true);
+      
+      console.log('[NodeWorker] Successfully wrote model to VFS path:', modelPath);
+      
+    } catch (error) {
+      throw new VFSError(
+        `Failed to write model data to VFS: ${error instanceof Error ? error.message : String(error)}`,
+        modelPath
+      );
+    }
+    
+    // Release reference to the large buffer now that it's in VFS
+    modelDataBuffer = null; 
+
+    reportProgress(LoadingStage.VFS_WRITE_COMPLETE, { 
+        message: 'Model written to virtual filesystem',
+        loaded: totalSize,
+        total: totalSize
+    });
+
+    // Check for cancellation after writing to VFS
+    if (checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
+    // 6. Parse Metadata (from VFS)
+    let metadata: ModelSpecification | null = null;
+    try {
+      metadata = await parseModelMetadata(); // Call the actual implementation now
+    } catch (error) {
+      console.warn("[NodeWorker] Metadata parsing failed, continuing without full metadata:", error);
+      // Report the error but allow initialization to continue if possible
+      reportError(error instanceof Error ? error : new GGUFParsingError(String(error)), LoadingStage.METADATA_PARSE_COMPLETE); 
+    }
+    
+    // Check for cancellation after metadata parsing
+    if (checkCancellation()) {
+        cleanupAfterCancellation();
+        return;
+    }
+
+    // 7. Report completion
+    reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
+      message: 'Model ready for inference',
+      metadata: metadata || undefined
+    });
+
+    if (metadata) {
       postMessageToParent({ event: workerActions.MODEL_METADATA, metadata });
+    }
+
+    // Signal that the model is loaded and ready
+    postMessageToParent({ event: workerActions.INITIALIZED });
+
+    reportProgress(LoadingStage.MODEL_READY, {
+      message: 'Model loaded and ready',
+      loaded: totalSize,
+      total: totalSize,
+      metadata: metadata || undefined
+    });
+
+  } catch (error) {
+    console.error('[NodeWorker] Error during model loading:', error);
+    reportError(error instanceof Error ? error : new Error(String(error)));
+  } finally {
+    // Ensure the file handle is closed
+    if (fileHandle) {
+      try {
+        await fileHandle.close();
+        console.log(`[NodeWorker] Closed file handle for: ${modelPathFromArgs}`);
+      } catch (closeError) {
+        console.error(`[NodeWorker] Error closing file handle: ${closeError}`);
+      }
+    }
+    // Release buffer reference if it wasn't already
+    modelDataBuffer = null;
+    // Reset cancellation state for the next operation
+    resetCancellationState(); 
   }
-  
-  // Post INITIALIZED again to signify model readiness in this stub context
-  postMessageToParent({ event: workerActions.INITIALIZED });
-
-  reportProgress(LoadingStage.MODEL_READY, {
-    message: 'Stub: Model Ready',
-    metadata: metadata
-  });
 }
 
-async function parseModelMetadata(): Promise<ModelSpecification> {
-  console.log("[NodeWorker] Stub: parseModelMetadata called");
-  reportProgress(LoadingStage.METADATA_PARSE_START, { message: 'Stub: Parsing model metadata' });
-  
-  // Simulate parsing success
-  await new Promise(resolve => setTimeout(resolve, 30));
-  
-  const stubMetadata: ModelSpecification = {
-    ggufVersion: 3, // Example value
-    architecture: 'stub-arch',
-    contextLength: 2048,
-    embeddingLength: 4096,
-    modelName: 'Stub Model',
-    // Add other fields as needed for basic testing
-  };
-  
-  reportProgress(LoadingStage.METADATA_PARSE_COMPLETE, { 
-    message: 'Stub: Metadata parsed', 
-    metadata: stubMetadata 
-  });
-  return stubMetadata;
+// Un-stub: Keep the actual implementation that reads from VFS
+async function parseModelMetadata(): Promise<ModelSpecification | null> {
+  console.log("[NodeWorker] Parsing model metadata from VFS...");
+  if (!wasmModuleInstance) {
+    const error = new WasmError('Wasm module not initialized when trying to parse model metadata');
+    reportError(error);
+    return null;
+  }
+
+  try {
+    reportProgress(LoadingStage.METADATA_PARSE_START, {
+      message: 'Reading model header from VFS for metadata extraction'
+    });
+
+    let stream;
+    try {
+      stream = wasmModuleInstance.FS.open(modelPath, 'r');
+    } catch (err) {
+      throw new FileError(`Failed to open model file in VFS at ${modelPath}: ${err instanceof Error ? err.message : String(err)}`, modelPath);
+    }
+
+    const headerBuffer = new Uint8Array(headerReadSize);
+    let bytesRead: number;
+    try {
+      bytesRead = wasmModuleInstance.FS.read(stream, headerBuffer, 0, headerReadSize, 0);
+    } catch (err) {
+      throw new FileError(`Failed to read model file header from VFS: ${err instanceof Error ? err.message : String(err)}`, modelPath);
+    } finally {
+      try {
+        wasmModuleInstance.FS.close(stream);
+      } catch (closeErr) {
+        console.error('[NodeWorker] Error closing VFS file stream after read attempt:', closeErr);
+      }
+    }
+
+    if (bytesRead < 8) {
+      throw new GGUFParsingError(
+        `Failed to read sufficient header data from VFS: only read ${bytesRead} bytes`,
+        { bytesRead, minimumRequired: 8 }
+      );
+    }
+
+    const headerData = headerBuffer.slice(0, bytesRead).buffer; // Get ArrayBuffer view
+
+    // Validate first (reuse existing validation)
+    validateGGUFHeader(headerData);
+
+    // Parse
+    const metadata = parseGGUFHeader(headerData);
+
+    reportProgress(LoadingStage.METADATA_PARSE_COMPLETE, {
+      message: 'Model metadata extracted successfully from VFS',
+      metadata: metadata
+    });
+
+    return metadata;
+  } catch (error) {
+    // Throw the error to be caught by the caller (loadModelData)
+    console.error("[NodeWorker] Error parsing metadata from VFS:", error);
+    if (error instanceof Error) {
+        throw error; // Re-throw specific errors
+    } else {
+        throw new GGUFParsingError(String(error)); // Wrap unknown errors
+    }
+  }
 }
 
+// Keep runMain stubbed for Phase C
 function runMain(prompt: string, params: Record<string, any>) {
   console.log(`[NodeWorker] Stub: runMain called with prompt: "${prompt}", params:`, params);
   if (!wasmModuleInstance) {
@@ -373,4 +570,42 @@ process.on('unhandledRejection', (reason, promise) => {
   reportError(reason instanceof Error ? reason : new Error('Unhandled promise rejection in worker'));
   // Optional: exit the worker process
   // process.exit(1);
-}); 
+});
+
+// --- Helper: Validate GGUF Header (Copied from worker.ts for standalone use if needed, or ensure import works) ---
+// Ensure this function is available
+function validateGGUFHeader(buffer: ArrayBuffer): void {
+  if (!buffer || buffer.byteLength < 8) {
+    throw new GGUFParsingError(
+      "Insufficient data to validate file format (minimum 8 bytes required)",
+      { byteLength: buffer?.byteLength ?? 0 }
+    );
+  }
+
+  const dataView = new DataView(buffer);
+  
+  // Check magic number "GGUF" (0x46554747 in little-endian)
+  const magic = dataView.getUint32(0, true);
+  if (magic !== 0x46554747) {
+    throw new GGUFParsingError(
+      `Invalid file format: Not a GGUF file (magic number mismatch)`,
+      { expected: 0x46554747, actual: magic, hexActual: `0x${magic.toString(16).toUpperCase()}` }
+    );
+  }
+
+  // Check version
+  const version = dataView.getUint32(4, true);
+  const minSupported = 2;
+  const maxSupported = 3; // Align with gguf-parser.ts if changed there
+  
+  if (version < minSupported || version > maxSupported) {
+    throw new ModelCompatibilityError(
+      `Unsupported GGUF version`,
+      version,
+      minSupported,
+      maxSupported
+    );
+  }
+}
+
+// --- End Helper --- 
