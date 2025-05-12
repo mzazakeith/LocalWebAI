@@ -4,7 +4,7 @@ This project aims to create a powerful TypeScript library that enables developer
 
 This project is currently in **Phase 1: Foundation & Enhancement** after POC was achieved .
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mzazakeith/LocalWebAI)
+ <!-- [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mzazakeith/LocalWebAI) -->
 
 ## Current Status: Phase 1 In Progress
 
