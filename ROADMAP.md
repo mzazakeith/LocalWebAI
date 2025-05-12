@@ -24,25 +24,23 @@ This document outlines the planned features and development trajectory for the L
     *   Functional browser-based demo (`ts-wrapper/index.html`).
     *   HTTP server setup with COOP/COEP headers for `SharedArrayBuffer`.
 
-### Phase 1: Foundation & Enhancement (Next Steps)
+### Phase 1: Foundation & Enhancement (In Progress)
 
 *   **Goal**: Solidify the core library, expand model support, and improve basic performance.
 *   **Runtime & API**: 
     *   Refine `LlamaRunner` API based on POC learnings.
-    *   Improve error handling and reporting.
-    *   **Node.js Runtime**: Create a parallel runtime environment for Node.js using `worker_threads` and native Wasm bindings (if beneficial over Emscripten's Node output).
-    *   Unified API surface for both browser and Node.js environments.
+    *   **[COMPLETED]** Implemented comprehensive error handling and reporting.
+    *   **[NEXT FOCUS]** **Node.js Runtime**: Create a parallel runtime environment for Node.js using `worker_threads` and native Wasm bindings (if beneficial over Emscripten's Node output).
+    *   **[NEXT FOCUS]** Unified API surface for both browser and Node.js environments.
 *   **Model Management**:
-    *   **[COMPLETED] Chunking for IndexedDB**: Implemented robust model caching for large models by splitting them into manageable chunks, addressing the current POC limitation.
-    *   **Advanced Model Loading**: Progress reporting for all stages (download, VFS loading, Wasm initialization).
-    *   Introduce basic model metadata handling.
+    *   **[COMPLETED]** **Robust Model Loading**: Implemented chunking for IndexedDB caching (supporting large models), granular progress reporting for all stages (download, VFS write, metadata parsing, initialization), cancellation support, and detailed metadata/provenance handling (parsing, validation, storage, display).
 *   **Performance**:
-    *   **WASM SIMD**: Ensure SIMD optimizations are effectively utilized (present in current `llama-cpp-wasm` builds, verify and document).
-    *   **Basic WebGL Acceleration**: Investigate and implement WebGL-based acceleration for matrix operations as an enhancement layer (as per POC spec).
-    *   Performance benchmarking tools and documented metrics.
+    *   **[NEXT FOCUS]** **WASM SIMD**: Ensure SIMD optimizations are effectively utilized (present in current `llama-cpp-wasm` builds, verify and document).
+    *   **[NEXT FOCUS]** **Basic WebGL Acceleration**: Investigate and implement WebGL-based acceleration for matrix operations as an enhancement layer (as per POC spec).
+    *   **[NEXT FOCUS]** Performance benchmarking tools and documented metrics.
 *   **Developer Experience**:
-    *   Comprehensive unit and integration tests for `ts-wrapper`.
-    *   Clearer documentation for setup, usage, and available parameters.
+    *   **[NEXT FOCUS]** Comprehensive unit and integration tests for `ts-wrapper`.
+    *   **[NEXT FOCUS]** Clearer documentation for setup, usage, and available parameters.
 
 ### Phase 2: Multi-Format Support & Task Abstractions
 

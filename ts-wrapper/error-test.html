@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalWebAI Error Handling Test</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --border-radius: 0.5rem;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.5;
+            color: var(--gray-800);
+            background-color: var(--gray-50);
+            padding: 1rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1, h2, h3 {
+            margin-bottom: 0.5rem;
+        }
+
+        .card {
+            background-color: white;
+            border-radius: var(--border-radius);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            border-bottom: 1px solid var(--gray-200);
+            padding-bottom: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .test-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .test-case {
+            background-color: white;
+            border-radius: var(--border-radius);
+            border: 1px solid var(--gray-200);
+            padding: 1rem;
+        }
+
+        .test-case h3 {
+            font-size: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .test-description {
+            font-size: 0.875rem;
+            color: var(--gray-600);
+            margin-bottom: 1rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem 1rem;
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .btn:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn:disabled {
+            background-color: var(--gray-400);
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 0.75rem;
+            padding: 0.5rem;
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+        }
+
+        .status.running {
+            background-color: var(--gray-100);
+            border-left: 3px solid var(--primary);
+        }
+
+        .status.success {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-left: 3px solid var(--success);
+        }
+
+        .status.error {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-left: 3px solid var(--error);
+        }
+
+        .status.warning {
+            background-color: rgba(245, 158, 11, 0.1);
+            border-left: 3px solid var(--warning);
+        }
+
+        .error-container {
+            background-color: var(--gray-100);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin-top: 1rem;
+            overflow-x: auto;
+        }
+
+        .error-details {
+            font-family: monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+        }
+
+        .results-container {
+            margin-top: 2rem;
+        }
+
+        .error-display {
+            margin-top: 1rem;
+            padding: 1rem;
+            background-color: #fee2e2;
+            border: 1px solid #fecaca;
+            border-left: 4px solid var(--error);
+            border-radius: var(--border-radius);
+        }
+
+        .error-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .error-message {
+            font-size: 0.875rem;
+        }
+
+        .error-help {
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background-color: #f8fafc;
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+        }
+
+        .log-container {
+            height: 300px;
+            overflow-y: auto;
+            background-color: var(--gray-900);
+            color: var(--gray-100);
+            padding: 1rem;
+            font-family: monospace;
+            border-radius: var(--border-radius);
+            margin-top: 1rem;
+        }
+
+        .log-entry {
+            margin-bottom: 0.25rem;
+            line-height: 1.4;
+        }
+
+        .log-entry.info {
+            color: #93c5fd;
+        }
+
+        .log-entry.error {
+            color: #fca5a5;
+        }
+
+        .log-entry.success {
+            color: #86efac;
+        }
+
+        .log-entry.warning {
+            color: #fcd34d;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>LocalWebAI Error Handling Test</h1>
+        <p>This page tests various error scenarios to validate the error handling system.</p>
+    </header>
+
+    <main>
+        <div class="card">
+            <div class="card-header">
+                <h2>Error Test Cases</h2>
+            </div>
+            <div class="test-grid">
+                <!-- Network Error Test -->
+                <div class="test-case">
+                    <h3>Network Error Test</h3>
+                    <p class="test-description">Tests error handling when an invalid URL is provided</p>
+                    <button id="networkErrorBtn" class="btn">Run Test</button>
+                    <div id="networkErrorStatus" class="status"></div>
+                </div>
+
+                <!-- File Error Test -->
+                <div class="test-case">
+                    <h3>File Error Test</h3>
+                    <p class="test-description">Tests error handling when a file with wrong format is provided</p>
+                    <button id="fileErrorBtn" class="btn">Run Test</button>
+                    <div id="fileErrorStatus" class="status"></div>
+                </div>
+
+                <!-- GGUF Parsing Error Test -->
+                <div class="test-case">
+                    <h3>GGUF Parsing Error Test</h3>
+                    <p class="test-description">Tests error handling when a corrupted GGUF file is parsed</p>
+                    <button id="ggufParsingErrorBtn" class="btn">Run Test</button>
+                    <div id="ggufParsingErrorStatus" class="status"></div>
+                </div>
+
+                <!-- Model Compatibility Error Test -->
+                <div class="test-case">
+                    <h3>Model Compatibility Error Test</h3>
+                    <p class="test-description">Tests error handling for an unsupported GGUF version</p>
+                    <button id="modelCompatibilityErrorBtn" class="btn">Run Test</button>
+                    <div id="modelCompatibilityErrorStatus" class="status"></div>
+                </div>
+
+                <!-- Operation Cancelled Error Test -->
+                <div class="test-case">
+                    <h3>Cancellation Test</h3>
+                    <p class="test-description">Tests error handling when loading is cancelled</p>
+                    <button id="cancellationErrorBtn" class="btn">Run Test</button>
+                    <div id="cancellationErrorStatus" class="status"></div>
+                </div>
+
+                <!-- WebAssembly Error Test -->
+                <div class="test-case">
+                    <h3>WebAssembly Error Test</h3>
+                    <p class="test-description">Tests error handling for WebAssembly initialization failures</p>
+                    <button id="wasmErrorBtn" class="btn">Run Test</button>
+                    <div id="wasmErrorStatus" class="status"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>Error Display</h2>
+            </div>
+            <div id="errorDisplay"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2>Test Log</h2>
+            </div>
+            <div id="logContainer" class="log-container"></div>
+        </div>
+    </main>
+
+    <script type="module">
+        // Import necessary modules
+        import { LlamaRunner } from './dist/llama-runner.js';
+        import { LoadingStage, getStageDescription } from './dist/loading-progress.js';
+        
+        // Paths to files - these should be adjusted based on your local setup
+        const WORKER_PATH = './dist/worker.js';
+        const WASM_MODULE_PATH = '../llama-cpp-wasm/dist/llama-mt/main.js';
+        const WASM_PATH = '../llama-cpp-wasm/dist/llama-mt/main.wasm';
+        
+        // Initialize DOM elements
+        const networkErrorBtn = document.getElementById('networkErrorBtn');
+        const fileErrorBtn = document.getElementById('fileErrorBtn');
+        const ggufParsingErrorBtn = document.getElementById('ggufParsingErrorBtn');
+        const modelCompatibilityErrorBtn = document.getElementById('modelCompatibilityErrorBtn');
+        const cancellationErrorBtn = document.getElementById('cancellationErrorBtn');
+        const wasmErrorBtn = document.getElementById('wasmErrorBtn');
+        
+        const networkErrorStatus = document.getElementById('networkErrorStatus');
+        const fileErrorStatus = document.getElementById('fileErrorStatus');
+        const ggufParsingErrorStatus = document.getElementById('ggufParsingErrorStatus');
+        const modelCompatibilityErrorStatus = document.getElementById('modelCompatibilityErrorStatus');
+        const cancellationErrorStatus = document.getElementById('cancellationErrorStatus');
+        const wasmErrorStatus = document.getElementById('wasmErrorStatus');
+        
+        const errorDisplay = document.getElementById('errorDisplay');
+        const logContainer = document.getElementById('logContainer');
+
+        // Test runner helpers
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function updateStatus(element, message, status) {
+            element.textContent = message;
+            element.className = `status ${status}`;
+        }
+
+        function displayError(error) {
+            errorDisplay.innerHTML = '';
+
+            const container = document.createElement('div');
+            container.className = 'error-display';
+            
+            const title = document.createElement('div');
+            title.className = 'error-title';
+            title.textContent = error.name || 'Error';
+            container.appendChild(title);
+            
+            const message = document.createElement('div');
+            message.className = 'error-message';
+            message.textContent = error.message || String(error);
+            container.appendChild(message);
+            
+            // If detailed properties are available
+            if (error.details || error.actualVersion !== undefined || error.fileName || error.url) {
+                const details = document.createElement('pre');
+                details.className = 'error-details';
+                
+                const detailsObj = {};
+                if (error.name) detailsObj.type = error.name;
+                if (error.actualVersion !== undefined) {
+                    detailsObj.actualVersion = error.actualVersion;
+                    detailsObj.minSupported = error.minSupported;
+                    detailsObj.maxSupported = error.maxSupported;
+                }
+                if (error.fileName) detailsObj.fileName = error.fileName;
+                if (error.url) detailsObj.url = error.url;
+                if (error.details) detailsObj.details = error.details;
+                
+                details.textContent = JSON.stringify(detailsObj, null, 2);
+                container.appendChild(details);
+            }
+            
+            errorDisplay.appendChild(container);
+        }
+
+        // Create a new LlamaRunner instance for testing
+        let llamaRunner;
+        try {
+            llamaRunner = new LlamaRunner(WORKER_PATH, WASM_MODULE_PATH, WASM_PATH);
+            log('LlamaRunner initialized successfully', 'success');
+        } catch (e) {
+            log(`Failed to initialize LlamaRunner: ${e.message}`, 'error');
+            displayError(e);
+        }
+
+        // Network Error Test
+        networkErrorBtn.addEventListener('click', async () => {
+            log('Starting Network Error Test...', 'info');
+            updateStatus(networkErrorStatus, 'Running...', 'running');
+            
+            try {
+                const invalidUrl = 'https://non-existent-domain-1234567890.gguf';
+                await llamaRunner.loadModel(invalidUrl, 'invalid-url-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.ERROR) {
+                        log(`Error detected: ${progress.error}`, 'error');
+                    }
+                });
+                
+                // This should not execute if error handling works properly
+                updateStatus(networkErrorStatus, 'Failed: No error thrown', 'error');
+                log('Network Error Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch a NetworkError
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'NetworkError') {
+                    updateStatus(networkErrorStatus, 'Success: NetworkError caught', 'success');
+                    log('Network Error Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(networkErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`Network Error Test partial failure - expected NetworkError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // File Error Test - Create an invalid "GGUF" file
+        fileErrorBtn.addEventListener('click', async () => {
+            log('Starting File Error Test...', 'info');
+            updateStatus(fileErrorStatus, 'Running...', 'running');
+            
+            try {
+                // Create a small ArrayBuffer with random data - not a valid GGUF file
+                const invalidFileData = new ArrayBuffer(1024);
+                const dataView = new DataView(invalidFileData);
+                
+                // Fill with random bytes
+                for (let i = 0; i < invalidFileData.byteLength; i++) {
+                    dataView.setUint8(i, Math.floor(Math.random() * 256));
+                }
+                
+                // Create a File object
+                const invalidFile = new File([invalidFileData], 'invalid.gguf', { type: 'application/octet-stream' });
+                
+                await llamaRunner.loadModel(invalidFile, 'invalid-file-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.ERROR) {
+                        log(`Error detected: ${progress.error}`, 'error');
+                    }
+                });
+                
+                // This should not execute if error handling works properly
+                updateStatus(fileErrorStatus, 'Failed: No error thrown', 'error');
+                log('File Error Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch a GGUFParsingError or FileError
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'GGUFParsingError' || error.name === 'FileError') {
+                    updateStatus(fileErrorStatus, `Success: ${error.name} caught`, 'success');
+                    log('File Error Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(fileErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`File Error Test partial failure - expected GGUFParsingError or FileError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // GGUF Parsing Error Test - Create a corrupted GGUF file
+        ggufParsingErrorBtn.addEventListener('click', async () => {
+            log('Starting GGUF Parsing Error Test...', 'info');
+            updateStatus(ggufParsingErrorStatus, 'Running...', 'running');
+            
+            try {
+                // Create a file with GGUF magic number but corrupted data
+                const invalidGgufData = new ArrayBuffer(1024);
+                const dataView = new DataView(invalidGgufData);
+                
+                // Set the GGUF magic number (0x46554747 = "GGUF" in ASCII)
+                dataView.setUint32(0, 0x46554747, true);
+                
+                // Set an invalid version (higher than supported)
+                dataView.setUint32(4, 9999, true);
+                
+                // Rest is random data
+                for (let i = 8; i < invalidGgufData.byteLength; i++) {
+                    dataView.setUint8(i, Math.floor(Math.random() * 256));
+                }
+                
+                // Create a File object
+                const invalidGgufFile = new File([invalidGgufData], 'corrupt.gguf', { type: 'application/octet-stream' });
+                
+                await llamaRunner.loadModel(invalidGgufFile, 'corrupt-gguf-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.ERROR) {
+                        log(`Error detected: ${progress.error}`, 'error');
+                    }
+                });
+                
+                // This should not execute if error handling works properly
+                updateStatus(ggufParsingErrorStatus, 'Failed: No error thrown', 'error');
+                log('GGUF Parsing Error Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch a ModelCompatibilityError (due to version)
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'ModelCompatibilityError') {
+                    updateStatus(ggufParsingErrorStatus, 'Success: ModelCompatibilityError caught', 'success');
+                    log('GGUF Parsing Error Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(ggufParsingErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`GGUF Parsing Error Test partial failure - expected ModelCompatibilityError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // Model Compatibility Error Test - Create a valid GGUF file with unsupported version
+        modelCompatibilityErrorBtn.addEventListener('click', async () => {
+            log('Starting Model Compatibility Error Test...', 'info');
+            updateStatus(modelCompatibilityErrorStatus, 'Running...', 'running');
+            
+            try {
+                // Create a file with GGUF magic number but unsupported version
+                const invalidVersionData = new ArrayBuffer(1024);
+                const dataView = new DataView(invalidVersionData);
+                
+                // Set the GGUF magic number (0x46554747 = "GGUF" in ASCII)
+                dataView.setUint32(0, 0x46554747, true);
+                
+                // Set version 1 (lower than supported)
+                dataView.setUint32(4, 1, true);
+                
+                // Add some metadata so it looks like a valid GGUF file
+                // Set tensor count to 0
+                dataView.setUint32(8, 0, true);
+                // Set metadata count to 1
+                dataView.setUint32(12, 1, true);
+                
+                // Create a File object
+                const invalidVersionFile = new File([invalidVersionData], 'old-version.gguf', { type: 'application/octet-stream' });
+                
+                await llamaRunner.loadModel(invalidVersionFile, 'old-version-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.ERROR) {
+                        log(`Error detected: ${progress.error}`, 'error');
+                    }
+                });
+                
+                // This should not execute if error handling works properly
+                updateStatus(modelCompatibilityErrorStatus, 'Failed: No error thrown', 'error');
+                log('Model Compatibility Error Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch a ModelCompatibilityError
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'ModelCompatibilityError') {
+                    updateStatus(modelCompatibilityErrorStatus, 'Success: ModelCompatibilityError caught', 'success');
+                    log('Model Compatibility Error Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(modelCompatibilityErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`Model Compatibility Error Test partial failure - expected ModelCompatibilityError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // Cancellation Test
+        cancellationErrorBtn.addEventListener('click', async () => {
+            log('Starting Cancellation Test...', 'info');
+            updateStatus(cancellationErrorStatus, 'Running...', 'running');
+            
+            try {
+                // Create a reasonably sized file to give time for cancellation
+                const dummyData = new ArrayBuffer(50 * 1024 * 1024); // 50MB
+                const dummyFile = new File([dummyData], 'large.gguf', { type: 'application/octet-stream' });
+                
+                // Create an AbortController
+                const abortController = new AbortController();
+                
+                // Start loading but cancel after a short delay
+                const loadPromise = llamaRunner.loadModel(dummyFile, 'cancellation-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.CANCELLED) {
+                        log('Cancellation detected in progress callback', 'success');
+                    }
+                }, abortController.signal);
+                
+                // Wait a moment then abort
+                setTimeout(() => {
+                    log('Cancelling load operation...', 'info');
+                    abortController.abort();
+                }, 100);
+                
+                await loadPromise;
+                
+                // This should not execute if error handling works properly
+                updateStatus(cancellationErrorStatus, 'Failed: No error thrown', 'error');
+                log('Cancellation Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch an OperationCancelledError
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'OperationCancelledError' || error.name === 'AbortError') {
+                    updateStatus(cancellationErrorStatus, 'Success: Cancellation error caught', 'success');
+                    log('Cancellation Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(cancellationErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`Cancellation Test partial failure - expected OperationCancelledError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // WebAssembly Error Test - Use an invalid WASM path
+        wasmErrorBtn.addEventListener('click', async () => {
+            log('Starting WebAssembly Error Test...', 'info');
+            updateStatus(wasmErrorStatus, 'Running...', 'running');
+            
+            try {
+                // Create a new LlamaRunner with an invalid WASM path
+                const invalidWasmPath = './non-existent.wasm';
+                const invalidRunner = new LlamaRunner(WORKER_PATH, invalidWasmPath, invalidWasmPath);
+                
+                // Create a small dummy file
+                const dummyData = new ArrayBuffer(1024);
+                const dummyFile = new File([dummyData], 'dummy.gguf', { type: 'application/octet-stream' });
+                
+                await invalidRunner.loadModel(dummyFile, 'wasm-error-test', (progress) => {
+                    log(`Progress: ${progress.stage} - ${progress.message || ''}`, 'info');
+                    
+                    if (progress.stage === LoadingStage.ERROR) {
+                        log(`Error detected: ${progress.error}`, 'error');
+                    }
+                });
+                
+                // This should not execute if error handling works properly
+                updateStatus(wasmErrorStatus, 'Failed: No error thrown', 'error');
+                log('WebAssembly Error Test failed - no error was thrown', 'error');
+            } catch (error) {
+                // This is the expected path - should catch a WasmError
+                log(`Caught error: ${error.name} - ${error.message}`, 'success');
+                displayError(error);
+                
+                if (error.name === 'WasmError') {
+                    updateStatus(wasmErrorStatus, 'Success: WasmError caught', 'success');
+                    log('WebAssembly Error Test passed - correct error type was thrown', 'success');
+                } else {
+                    updateStatus(wasmErrorStatus, `Wrong error type: ${error.name}`, 'warning');
+                    log(`WebAssembly Error Test partial failure - expected WasmError but got ${error.name}`, 'warning');
+                }
+            }
+        });
+
+        // Initial logs
+        log('Error handling test page loaded', 'info');
+        log('Click on test buttons to verify error handling', 'info');
+    </script>
+</body>
+</html> 

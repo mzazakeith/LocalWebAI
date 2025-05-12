@@ -3,160 +3,474 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Llama.cpp Wasm Runner POC</title>
+    <title>Local WebAI - Llama.cpp WASM Runner</title>
     <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --primary-light: #dbeafe;
+            --success: #10b981;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-400: #9ca3af;
+            --gray-500: #6b7280;
+            --gray-600: #4b5563;
+            --gray-700: #374151;
+            --gray-800: #1f2937;
+            --gray-900: #111827;
+            --border-radius: 0.5rem;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f4f7f9;
-            color: #333;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
+            line-height: 1.5;
+            color: var(--gray-800);
+            background-color: var(--gray-50);
+            padding: 1rem;
+            max-width: 1600px;
+            margin: 0 auto;
         }
-        .container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 700px;
-            margin-top: 20px;
-        }
-        h1 {
+
+        .app-header {
             text-align: center;
-            color: #2c3e50;
-            margin-bottom: 30px;
+            margin-bottom: 2rem;
         }
-        .input-group {
-            margin-bottom: 20px;
+
+        .app-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--gray-900);
+            margin-bottom: 0.5rem;
         }
+
+        .app-subtitle {
+            font-size: 1rem;
+            color: var(--gray-600);
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (min-width: 1024px) {
+            .app-container {
+                grid-template-columns: 1.5fr 1fr;
+            }
+        }
+
+        .card {
+            background-color: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--gray-200);
+        }
+
+        .card-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--gray-800);
+        }
+
         label {
             display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #555;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: var(--gray-700);
         }
+
         input[type="text"], input[type="file"], textarea {
-            width: calc(100% - 20px);
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 16px;
-            margin-bottom: 10px;
+            width: 100%;
+            padding: 0.625rem;
+            border: 1px solid var(--gray-300);
+            border-radius: var(--border-radius);
+            font-size: 0.875rem;
+            transition: border-color 0.15s ease;
+            outline: none;
         }
+
+        input[type="text"]:focus, textarea:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
         textarea {
             min-height: 120px;
             resize: vertical;
+            font-family: inherit;
         }
-        button {
-            background-color: #3498db;
-            color: white;
-            padding: 12px 20px;
+
+        .input-group {
+            margin-bottom: 1.25rem;
+        }
+
+        .input-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.625rem 1rem;
+            font-size: 0.875rem;
+            font-weight: 500;
             border: none;
-            border-radius: 4px;
+            border-radius: var(--border-radius);
             cursor: pointer;
-            font-size: 16px;
-            transition: background-color 0.3s ease;
-            margin-right: 10px;
+            transition: background-color 0.15s ease;
+            text-align: center;
         }
-        button:hover {
-            background-color: #2980b9;
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
         }
-        button:disabled {
-            background-color: #bdc3c7;
+
+        .btn-primary:hover:not(:disabled) {
+            background-color: var(--primary-hover);
+        }
+
+        .btn:disabled {
+            opacity: 0.7;
             cursor: not-allowed;
         }
-        .output-area, .progress-area {
-            margin-top: 20px;
-            padding: 15px;
-            border: 1px solid #eee;
-            border-radius: 4px;
-            background-color: #f9f9f9;
-            min-height: 50px;
-            white-space: pre-wrap; /* Preserve line breaks */
-            word-wrap: break-word;
+
+        .loading-stage {
+            display: flex;
+            align-items: center;
+            margin: 1rem 0;
+            padding: 0.75rem 1rem;
+            background-color: var(--primary-light);
+            border-left: 4px solid var(--primary);
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            font-weight: 500;
         }
+
+        .loading-stage.error {
+            background-color: #fee2e2;
+            border-left-color: var(--error);
+        }
+
+        .loading-stage.warning {
+            background-color: #fef3c7;
+            border-left-color: var(--warning);
+        }
+
+        .loading-stage.complete {
+            background-color: #ecfdf5;
+            border-left-color: var(--success);
+        }
+
+        .progress-container {
+            margin: 1rem 0;
+        }
+
         .progress-bar-container {
             width: 100%;
-            background-color: #e0e0e0;
-            border-radius: 4px;
-            margin-top: 5px;
-            height: 20px;
+            height: 0.625rem;
+            background-color: var(--gray-200);
+            border-radius: 1rem;
+            overflow: hidden;
         }
+
         .progress-bar {
-            width: 0%;
             height: 100%;
-            background-color: #3498db;
-            border-radius: 4px;
-            text-align: center;
-            line-height: 20px;
-            color: white;
-            font-size: 12px;
+            background-color: var(--primary);
+            border-radius: 1rem;
+            transition: width 0.3s ease;
+            color: transparent;
+            font-size: 0;
         }
+
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+            color: var(--gray-600);
+        }
+
+        .metadata-container {
+            overflow: auto;
+            max-height: 500px;
+            border: 1px solid var(--gray-200);
+            border-radius: var(--border-radius);
+            background-color: var(--gray-50);
+        }
+
+        .metadata-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .metadata-table th,
+        .metadata-table td {
+            padding: 0.625rem;
+            text-align: left;
+            border-bottom: 1px solid var(--gray-200);
+            font-size: 0.875rem;
+        }
+
+        .metadata-table th {
+            background-color: var(--gray-100);
+            font-weight: 600;
+        }
+
+        .metadata-key {
+            font-weight: 500;
+            color: var(--gray-800);
+        }
+
+        .generation-output {
+            background-color: var(--gray-50);
+            border: 1px solid var(--gray-200);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin-top: 1rem;
+            min-height: 100px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 0.875rem;
+            line-height: 1.5;
+        }
+
         .hidden {
             display: none;
         }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .form-row .input-group {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
         .footer {
             text-align: center;
-            margin-top: 40px;
-            color: #777;
-            font-size: 14px;
+            margin-top: 2rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--gray-200);
+            color: var(--gray-500);
+            font-size: 0.875rem;
+        }
+
+        /* Animation for indeterminate progress */
+        @keyframes progress-bar-animation {
+            0% { background-position: 100% 0; }
+            100% { background-position: 0 0; }
+        }
+
+        /* Error message styles */
+        .error-container {
+            background-color: #fee2e2;
+            border: 1px solid #fecaca;
+            border-left: 4px solid var(--error);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #991b1b;
+        }
+
+        .error-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .error-message {
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .error-details {
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid #fecaca;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+
+        .error-icon {
+            width: 20px;
+            height: 20px;
+            display: inline-block;
+        }
+
+        .error-help {
+            background-color: #f8fafc;
+            border-radius: var(--border-radius);
+            padding: 0.75rem;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 1023px) {
+            .card {
+                padding: 1.25rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Local Llama Runner POC</h1>
+    <header class="app-header">
+        <h1 class="app-title">Local WebAI Model Runner</h1>
+        <p class="app-subtitle">Run LLM inference directly in your browser with WebAssembly</p>
+    </header>
 
-        <div class="input-group">
-            <label for="modelUrl">Model URL (e.g., .gguf from Hugging Face):</label>
-            <input type="text" id="modelUrl" placeholder="https://huggingface.co/.../model.gguf">
-            <label for="modelFile">Or Upload Model File:</label>
-            <input type="file" id="modelFile" accept=".gguf">
-            <button id="loadModelBtn">Load Model</button>
-        </div>
+    <div class="app-container">
+        <!-- Left column: Model loading and text generation -->
+        <div class="main-column">
+            <!-- Model Loading Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Load Model</h2>
+                </div>
+                <div class="form-row">
+                    <div class="input-group">
+                        <label for="modelUrl">Model URL:</label>
+                        <input type="text" id="modelUrl" placeholder="https://huggingface.co/.../model.gguf">
+                    </div>
+                    <div class="input-group">
+                        <label for="modelFile">Upload File:</label>
+                        <input type="file" id="modelFile" accept=".gguf">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
+                    <button id="cancelLoadBtn" class="btn" style="background-color: var(--error); color: white; display: none;">Cancel Loading</button>
+                </div>
+                
+                <!-- Error Display -->
+                <div id="errorContainer" class="error-container hidden">
+                    <div class="error-title">
+                        <svg class="error-icon" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                        <span id="errorTitle">Error</span>
+                    </div>
+                    <div id="errorMessage" class="error-message"></div>
+                    <div id="errorHelp" class="error-help hidden"></div>
+                    <div id="errorDetails" class="error-details hidden"></div>
+                </div>
+                
+                <!-- Progress Tracking -->
+                <div class="progress-container">
+                    <div id="loadingStage" class="loading-stage">Not started</div>
+                    <div id="modelProgressText" class="progress-info">Waiting to start...</div>
+                    <div class="progress-bar-container">
+                        <div id="modelProgressBar" class="progress-bar" style="width: 0%">0%</div>
+                    </div>
+                </div>
+            </div>
 
-        <div class="progress-area">
-            <label>Model Loading Progress:</label>
-            <div id="modelProgressText">Not started</div>
-            <div class="progress-bar-container">
-                <div id="modelProgressBar" class="progress-bar">0%</div>
+            <!-- Text Generation Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Generate Text</h2>
+                </div>
+                <div class="input-group">
+                    <label for="prompt">Prompt:</label>
+                    <textarea id="prompt" placeholder="Enter your prompt here..."></textarea>
+                </div>
+                <button id="generateBtn" class="btn btn-primary" disabled>Generate Text</button>
+                
+                <div class="output-container">
+                    <label>Response:</label>
+                    <div id="resultText" class="generation-output"></div>
+                </div>
             </div>
         </div>
 
-        <div class="input-group">
-            <label for="prompt">Prompt:</label>
-            <textarea id="prompt" placeholder="Enter your prompt here..."></textarea>
-            <button id="generateBtn" disabled>Generate Text</button>
-        </div>
-
-        <div class="output-area">
-            <label>Generated Text:</label>
-            <div id="resultText"></div>
+        <!-- Right column: Model metadata and diagnostics -->
+        <div class="info-column">
+            <div id="metadataArea" class="card hidden">
+                <div class="card-header">
+                    <h2 class="card-title">Model Information</h2>
+                </div>
+                <!-- New container specifically for provenance -->
+                <div id="provenanceContainer" style="margin-bottom: 1rem;">
+                    <!-- Provenance details will be added here -->
+                </div>
+                <div id="modelMetadata" class="metadata-container">
+                    <table class="metadata-table" id="metadataTable">
+                        <thead>
+                            <tr>
+                                <th>Property</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Metadata will be displayed here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
-    <div class="footer">
-        <p>Powered by Llama.cpp & WebAssembly</p>
-    </div>
+    <footer class="footer">
+        <p>Powered by Llama.cpp & WebAssembly · <a href="https://github.com/ggerganov/llama.cpp" target="_blank">llama.cpp</a></p>
+    </footer>
 
     <!-- Ensure this path is correct after compiling ts-wrapper -->
     <script type="module">
         // Dynamically import the LlamaRunner. Adjust path as necessary.
         // This assumes index.html is in ts-wrapper/ and dist/ is the output directory.
         import { LlamaRunner } from './dist/llama-runner.js';
+        import { LoadingStage, getStageDescription } from './dist/loading-progress.js';
 
         const modelUrlInput = document.getElementById('modelUrl');
         const modelFileInput = document.getElementById('modelFile');
         const loadModelBtn = document.getElementById('loadModelBtn');
+        const cancelLoadBtn = document.getElementById('cancelLoadBtn');
+        const loadingStage = document.getElementById('loadingStage');
         const modelProgressText = document.getElementById('modelProgressText');
         const modelProgressBar = document.getElementById('modelProgressBar');
         const promptInput = document.getElementById('prompt');
         const generateBtn = document.getElementById('generateBtn');
         const resultText = document.getElementById('resultText');
+        const metadataArea = document.getElementById('metadataArea');
+        const metadataTable = document.getElementById('metadataTable').querySelector('tbody');
+        const errorContainer = document.getElementById('errorContainer');
+        const errorTitle = document.getElementById('errorTitle');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorHelp = document.getElementById('errorHelp');
+        const errorDetails = document.getElementById('errorDetails');
 
         // --- Configuration: Adjust these paths --- 
         // These paths are relative to where this index.html is served from.
@@ -168,15 +482,319 @@
         // --- End Configuration ---
 
         let llamaRunner;
+        let abortController = null;
+        
+        /**
+         * Show a specific error with detailed information
+         */
+        function showError(error, title = 'Error') {
+            // Hide loading stage indicator
+            loadingStage.classList.add('error');
+            
+            // Set error information
+            errorTitle.textContent = title;
+            errorMessage.textContent = error.message || String(error);
+            
+            // Clear previous help and details
+            errorHelp.classList.add('hidden');
+            errorHelp.textContent = '';
+            errorDetails.classList.add('hidden');
+            errorDetails.textContent = '';
+            
+            // Add specific help information based on error type
+            if (error.name) {
+                // Show the error type in the title
+                errorTitle.textContent = error.name;
+                
+                // Add helpful information based on error type
+                switch (error.name) {
+                    case 'NetworkError':
+                        errorHelp.textContent = 'The model could not be downloaded. Please check your internet connection and verify the URL is correct and accessible.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'FileError':
+                        errorHelp.textContent = 'There was a problem reading the model file. Make sure the file is not corrupted and is a valid GGUF model file.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'GGUFParsingError':
+                        errorHelp.textContent = 'The model file appears to be an invalid or corrupted GGUF file. Ensure you are using a properly formatted GGUF model from a reliable source.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'ModelCompatibilityError':
+                        if (error.actualVersion !== undefined) {
+                            errorHelp.textContent = `The model uses GGUF version ${error.actualVersion}, but this app supports versions ${error.minSupported}-${error.maxSupported}. You may need to update this app or convert your model to a compatible version.`;
+                        } else {
+                            errorHelp.textContent = 'The model is not compatible with this version of the application. It may use an unsupported GGUF version or have other compatibility issues.';
+                        }
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'WasmError':
+                        errorHelp.textContent = 'There was a problem with the WebAssembly module. This could be due to browser compatibility issues or memory constraints. Try a smaller model or a different browser.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'OperationCancelledError':
+                        // For cancellation, we'll show a less severe indication
+                        errorContainer.style.backgroundColor = '#f1f5f9';
+                        errorContainer.style.borderColor = '#cbd5e1';
+                        errorContainer.style.color = '#475569';
+                        errorTitle.textContent = 'Operation Cancelled';
+                        errorHelp.textContent = 'The model loading was cancelled by the user.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                }
+                
+                // Add detailed error information if available
+                if (error.details || error.stack) {
+                    errorDetails.textContent = error.details ? JSON.stringify(error.details, null, 2) : error.stack;
+                    errorDetails.classList.remove('hidden');
+                }
+            }
+            
+            // Show the error container
+            errorContainer.classList.remove('hidden');
+        }
+        
+        /**
+         * Hide the error display
+         */
+        function hideError() {
+            errorContainer.classList.add('hidden');
+            // Reset any custom styling we might have applied
+            errorContainer.style.backgroundColor = '';
+            errorContainer.style.borderColor = '';
+            errorContainer.style.color = '';
+        }
+        
         try {
             llamaRunner = new LlamaRunner(WORKER_PATH, WASM_MODULE_PATH, WASM_PATH);
             console.log("LlamaRunner instantiated.");
         } catch (e) {
             console.error("Failed to instantiate LlamaRunner:", e);
             modelProgressText.textContent = "Error initializing runner: " + e.message;
-            alert("Error initializing LlamaRunner. Check console for details and ensure paths are correct.");
+            showError(e, 'Initialization Error');
         }
 
+        // Function to update loading stage UI
+        function updateLoadingStageUI(stage, message) {
+            // Hide any previous errors
+            hideError();
+            
+            // Update stage indicator with appropriate styling
+            loadingStage.textContent = getStageDescription(stage);
+            loadingStage.className = 'loading-stage'; // Reset class
+            
+            // Add specific class based on stage type
+            if (stage === LoadingStage.ERROR) {
+                loadingStage.classList.add('error');
+            } else if (stage === LoadingStage.CANCELLED) {
+                loadingStage.classList.add('warning');
+            } else if (stage === LoadingStage.MODEL_READY) {
+                loadingStage.classList.add('complete');
+            }
+            
+            // Update progress text with detailed message if provided
+            if (message) {
+                modelProgressText.textContent = message;
+            }
+        }
+        
+        // Function to update loading progress bar
+        function updateProgressBar(loaded, total) {
+            if (!loaded || !total) {
+                // If no numeric progress available, show indeterminate progress
+                modelProgressBar.style.width = '100%';
+                modelProgressBar.textContent = 'Processing...';
+                modelProgressBar.style.background = 'linear-gradient(to right, var(--primary), var(--success), var(--primary))';
+                modelProgressBar.style.backgroundSize = '200% 100%';
+                modelProgressBar.style.animation = 'progress-bar-animation 2s linear infinite';
+                return;
+            }
+
+            // Calculate percentage and format size values
+            const percentage = Math.min(100, Math.round((loaded / total) * 100));
+            const loadedMB = (loaded / 1024 / 1024).toFixed(2);
+            const totalMB = (total / 1024 / 1024).toFixed(2);
+            
+            // Update progress bar
+            modelProgressBar.style.width = `${percentage}%`;
+            modelProgressBar.textContent = `${percentage}%`;
+            modelProgressText.textContent = `${percentage}% (${loadedMB} MB / ${totalMB} MB)`;
+            
+            // Reset any animation or gradient
+            modelProgressBar.style.background = 'var(--primary)';
+            modelProgressBar.style.animation = 'none';
+        }
+
+        // Function to display model metadata
+        function displayModelMetadata(metadata) {
+            console.log("displayModelMetadata called with:", metadata); // <-- Log input metadata
+            
+            if (!metadata) {
+                console.log("No metadata provided, hiding area."); // <-- Log missing metadata
+                metadataArea.classList.add('hidden');
+                return;
+            }
+
+            // Get containers
+            const provenanceContainer = document.getElementById('provenanceContainer');
+            const metadataTableBody = document.getElementById('metadataTable').querySelector('tbody');
+            
+            if (!provenanceContainer || !metadataTableBody) {
+                console.error("Could not find metadata or provenance containers!");
+                return;
+            }
+            
+            // Clear previous content
+            provenanceContainer.innerHTML = '';
+            metadataTableBody.innerHTML = '';
+            
+            // Display important metadata properties first in the table
+            const priorityKeys = [
+                'modelName', 'architecture', 'quantization', 'ggufVersion',
+                'contextLength', 'embeddingLength', 'headCount', 'headCountKv'
+            ];
+            
+            // Populate Provenance Info container
+            const hasProvenance = metadata.downloadDate || metadata.sourceURL || metadata.fileName || metadata.fileSize;
+            console.log("Has provenance fields?", hasProvenance); // <-- Log provenance check result
+            
+            if (hasProvenance) {
+                console.log("Populating provenance info..."); // <-- Log populating provenance
+                const provenanceInfoElement = document.createElement('div');
+                provenanceInfoElement.className = 'provenance-info';
+                // Add styling (can also move to CSS)
+                provenanceInfoElement.style.padding = '0.75rem 1rem';
+                provenanceInfoElement.style.backgroundColor = 'var(--primary-light)';
+                provenanceInfoElement.style.borderRadius = 'var(--border-radius)';
+                provenanceInfoElement.style.fontSize = '0.875rem';
+                
+                let provenanceText = '<strong>Model Provenance</strong><br>';
+                
+                if (metadata.sourceURL) {
+                    const displayURL = metadata.sourceURL.length > 60 ? metadata.sourceURL.substring(0, 57) + '...' : metadata.sourceURL;
+                    provenanceText += `Source: <a href="${metadata.sourceURL}" target="_blank" title="${metadata.sourceURL}">${displayURL}</a><br>`;
+                }
+                
+                if (metadata.downloadDate) {
+                    try {
+                      const date = new Date(metadata.downloadDate);
+                      const formattedDate = date.toLocaleString();
+                      provenanceText += `Added: ${formattedDate}<br>`;
+                    } catch (e) {
+                      provenanceText += `Added: ${metadata.downloadDate} (Invalid Date)<br>`;
+                    }
+                }
+                
+                if (metadata.fileName) {
+                    provenanceText += `File: ${metadata.fileName}<br>`;
+                }
+                
+                if (metadata.fileSize) {
+                    const fileSizeMB = (metadata.fileSize / (1024 * 1024)).toFixed(2);
+                    provenanceText += `Size: ${fileSizeMB} MB`;
+                }
+                
+                provenanceInfoElement.innerHTML = provenanceText;
+                provenanceContainer.appendChild(provenanceInfoElement);
+            } else {
+                console.log("No provenance fields found in metadata to display."); // <-- Log if no provenance
+            }
+            
+            // Populate Metadata Table - Add priority keys first
+            priorityKeys.forEach(key => {
+                if (metadata[key] !== undefined) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td class="metadata-key">${formatKey(key)}</td>
+                        <td>${formatValue(metadata[key])}</td>
+                    `;
+                    metadataTableBody.appendChild(row);
+                }
+            });
+            
+            // Add other metadata properties to the table
+            for (const [key, value] of Object.entries(metadata)) {
+                // Skip priority keys already displayed and undefined/null values
+                if (priorityKeys.includes(key) || value === undefined || value === null) {
+                    continue;
+                }
+                
+                // Skip internal properties or provenance data (already handled)
+                if (key.startsWith('_') || typeof value === 'function' || 
+                    ['sourceURL', 'downloadDate', 'fileName', 'fileSize'].includes(key)) {
+                    continue;
+                }
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="metadata-key">${formatKey(key)}</td>
+                    <td>${formatValue(value)}</td>
+                `;
+                metadataTableBody.appendChild(row);
+            }
+            
+            // Show the metadata area
+            console.log("Making metadata area visible."); // <-- Log visibility change
+            metadataArea.classList.remove('hidden');
+        }
+        
+        // Helper function to format metadata keys for display
+        function formatKey(key) {
+            // Convert camelCase to Title Case with Spaces
+            return key.replace(/([A-Z])/g, ' $1')
+                .replace(/^./, str => str.toUpperCase())
+                .replace(/\./g, ' '); // Replace dots with spaces
+        }
+        
+        // Helper function to format metadata values for display
+        function formatValue(value) {
+            if (value === null || value === undefined) {
+                return 'N/A';
+            }
+            
+            if (typeof value === 'boolean') {
+                return value ? 'Yes' : 'No';
+            }
+            
+            if (typeof value === 'number') {
+                // Format large numbers with commas
+                return value.toLocaleString();
+            }
+            
+            if (typeof value === 'string') {
+                // Truncate very long strings
+                if (value.length > 100) {
+                    return value.substring(0, 97) + '...';
+                }
+                return value;
+            }
+            
+            // For objects, arrays, etc.
+            return JSON.stringify(value);
+        }
+
+        
+        // Cancel button click handler
+        cancelLoadBtn.addEventListener('click', () => {
+            if (!llamaRunner) return;
+            
+            // Cancel the loading process
+            if (abortController) {
+                abortController.abort();
+            } else {
+                llamaRunner.cancelLoading();
+            }
+            
+            // Update UI
+            cancelLoadBtn.style.display = 'none';
+            loadModelBtn.disabled = false;
+            updateLoadingStageUI(LoadingStage.CANCELLED, 'Model loading cancelled by user');
+        });
 
         loadModelBtn.addEventListener('click', async () => {
             if (!llamaRunner) return;
@@ -185,6 +803,9 @@
             let source;
             let modelId;
 
+            // Hide any previous errors
+            hideError();
+
             if (modelFile) {
                 source = modelFile;
                 modelId = `file-${modelFile.name}-${modelFile.size}`;
@@ -192,34 +813,64 @@
                 source = modelUrl;
                 modelId = modelUrl;
             } else {
-                alert("Please provide a model URL or select a model file.");
+                showError({ message: "Please provide a model URL or select a model file." }, "Input Required");
                 return;
             }
 
             loadModelBtn.disabled = true;
             generateBtn.disabled = true;
             resultText.textContent = '';
-            modelProgressText.textContent = 'Starting model load...';
-            modelProgressBar.style.width = '0%';
-            modelProgressBar.textContent = '0%';
+            metadataArea.classList.add('hidden'); // Hide metadata area when loading new model
+            
+            // Create a new AbortController for this operation
+            abortController = new AbortController();
+            cancelLoadBtn.style.display = 'inline-flex'; // Show cancel button
+            
+            // Initialize progress display
+            updateLoadingStageUI(LoadingStage.PREPARING_MODEL_DATA, 'Starting model load process...');
+            updateProgressBar(0, 1);
 
             try {
                 console.log(`Loading model: ${modelId}`);
-                await llamaRunner.loadModel(source, modelId, (loaded, total) => {
-                    const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
-                    modelProgressText.textContent = `Loading: ${percentage}% (${(loaded / 1024 / 1024).toFixed(2)} MB / ${(total / 1024 / 1024).toFixed(2)} MB)`;
-                    modelProgressBar.style.width = `${percentage}%`;
-                    modelProgressBar.textContent = `${percentage}%`;
-                });
-                modelProgressText.textContent = 'Model loaded successfully!';
+                await llamaRunner.loadModel(source, modelId, (progressInfo) => {
+                    // Update UI with progress information
+                    updateLoadingStageUI(progressInfo.stage, progressInfo.message);
+                    updateProgressBar(progressInfo.loaded, progressInfo.total);
+                    
+                    // If metadata becomes available, display it immediately
+                    if (progressInfo.metadata && progressInfo.stage === LoadingStage.METADATA_PARSE_COMPLETE) {
+                        displayModelMetadata(progressInfo.metadata);
+                    }
+                    
+                    // Show error information if error stage
+                    if (progressInfo.stage === LoadingStage.ERROR && progressInfo.error) {
+                        showError({ message: progressInfo.error });
+                    }
+                }, abortController.signal);
+                
+                // Model loaded successfully
+                updateLoadingStageUI(LoadingStage.MODEL_READY, 'Model loaded successfully!');
                 generateBtn.disabled = false;
+                
+                // Ensure metadata is displayed even if we missed the metadata stage update
+                const modelMetadata = llamaRunner.getModelMetadata();
+                if (modelMetadata) {
+                    displayModelMetadata(modelMetadata);
+                }
+                
                 console.log("Model loaded successfully.");
             } catch (error) {
                 console.error("Error loading model:", error);
-                modelProgressText.textContent = `Error loading model: ${error.message}`;
-                alert(`Error loading model: ${error.message}`);
+                
+                // Display specific error information based on error type
+                showError(error);
+                
+                // Additional UI updates
+                updateLoadingStageUI(LoadingStage.ERROR, error.message);
             } finally {
                 loadModelBtn.disabled = false;
+                cancelLoadBtn.style.display = 'none';
+                abortController = null;
             }
         });
 
@@ -227,19 +878,23 @@
             if (!llamaRunner) return;
             const prompt = promptInput.value;
             if (!prompt) {
-                alert("Please enter a prompt.");
+                showError({ message: "Please enter a prompt." }, "Input Required");
                 return;
             }
 
+            // Hide any previous errors
+            hideError();
+
             generateBtn.disabled = true;
             resultText.textContent = ''; // Clear previous results
+            resultText.classList.add('loading');
             let currentLine = '';
 
             console.log("Starting text generation...");
             try {
                  llamaRunner.generateText(
                     prompt,
-                    { temp: 0.4, n_predict: 400 },
+                    { temp: 0.7, n_predict: 150 },
                     (token) => {
                         // Stream tokens
                         currentLine += token;
@@ -248,14 +903,15 @@
                     () => {
                         // Completion
                         generateBtn.disabled = false;
+                        resultText.classList.remove('loading');
                         console.log("Text generation complete.");
                         modelProgressText.textContent = 'Generation complete.';
                     }
                 );
             } catch (error) {
                 console.error("Error during text generation:", error);
-                alert(`Error generating text: ${error.message}`);
-                resultText.textContent = `Error: ${error.message}`;
+                showError(error, "Generation Error");
+                resultText.classList.remove('loading');
                 generateBtn.disabled = false;
             }
         });
@@ -271,7 +927,6 @@
                 modelFileInput.value = ''; // Clear file if URL is typed
             }
         });
-
     </script>
 </body>
-</html> 
+</html>

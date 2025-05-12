@@ -2,21 +2,24 @@
 
 This project aims to create a powerful TypeScript library that enables developers to run Large Language Models (LLMs) directly in web browsers and Node.js environments. The core value is to provide a privacy-preserving, offline-capable, and low-latency solution for AI inference without relying on external API calls.
 
-This project is currently in the **Proof of Concept (POC)** stage, demonstrating the core feasibility of running GGUF models (like phi and Qwen) in the browser using WebAssembly.
+This project is currently in **Phase 1: Foundation & Enhancement** after POC was achieved .
 
  <!-- [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mzazakeith/LocalWebAI) -->
 
-## Current Status: POC Achieved
+## Current Status: Phase 1 In Progress
 
 We have successfully demonstrated the following capabilities:
 
 *   **In-Browser Inference**: Running `llama.cpp` compiled to WebAssembly (leveraging `llama-cpp-wasm` for the Wasm build).
 *   **TypeScript Wrapper**: A `ts-wrapper` provides a developer-friendly API (`LlamaRunner`) to interact with the Wasm module.
 *   **Model Loading**: Support for loading GGUF models from a URL or a user-provided File object.
-*   **Progress Reporting**: Visual feedback for model download and loading progress.
+*   **Robust Caching**: Models are cached in IndexedDB using chunking, supporting large models and providing faster subsequent loads.
+*   **Granular Progress**: Detailed progress reporting for all loading stages (download, VFS write, metadata parsing, initialization).
+*   **Metadata & Provenance**: Parsing, validation, and display of GGUF model metadata, including provenance information (source URL, download date, file details).
+*   **Error Handling**: Specific and user-friendly error reporting for various issues (network, file, format, compatibility, Wasm).
+*   **Cancellation**: Support for cancelling in-progress model downloads/loads.
 *   **Streaming Output**: Token-by-token text generation streamed to the UI.
 *   **Web Worker**: Inference runs in a separate Web Worker to maintain UI responsiveness.
-*   **Robust Caching**: Models are cached in IndexedDB for faster subsequent loads, now with chunking support for large models (addressing previous POC limitations).
 *   **Demo**: A functional `index.html` within the `ts-wrapper` directory showcases these features.
 *   **Server Setup**: Includes an Express.js server (`server.js`) at the project root, configured with necessary COOP/COEP headers for `SharedArrayBuffer` support, enabling multi-threaded Wasm execution.
 
@@ -69,13 +72,15 @@ We have successfully demonstrated the following capabilities:
 
 ## Next Steps & Future Vision
 
-This POC lays the groundwork for a much more comprehensive library. Key next steps from Phase 1 of our roadmap include:
+The recently completed enhancements to model loading, caching, and metadata handling have solidified the foundation. Key next steps from Phase 1 of our roadmap include:
 
-*   **[COMPLETED]** Implementing robust caching for large models in IndexedDB (via chunking).
-*   Developing a Node.js runtime for the library.
-*   Expanding model format support (ONNX, SafeTensors).
-*   Adding higher-level task APIs (chat, embeddings, summarize).
-*   Creating integrations for popular JavaScript frameworks (React, Vue, Next.js, etc.).
+*   Developing a **Node.js runtime** for the library.
+*   Verifying and optimizing **WASM SIMD** performance.
+*   Investigating basic **WebGL acceleration**.
+*   Adding comprehensive **unit/integration tests** and improving **documentation**.
+*   Creating a unified API surface for both browser and Node.js environments.
+
+Future phases will focus on expanding model format support (ONNX, SafeTensors), adding higher-level task APIs (chat, embeddings, summarize), and creating integrations for popular JavaScript frameworks (React, Vue, Next.js, etc.).
 
 For a detailed plan, please see the [**Project Roadmap (ROADMAP.md)**](./ROADMAP.md).
 
