@@ -422,6 +422,10 @@
                 <div class="card-header">
                     <h2 class="card-title">Model Information</h2>
                 </div>
+                <!-- New container specifically for provenance -->
+                <div id="provenanceContainer" style="margin-bottom: 1rem;">
+                    <!-- Provenance details will be added here -->
+                </div>
                 <div id="modelMetadata" class="metadata-container">
                     <table class="metadata-table" id="metadataTable">
                         <thead>
@@ -628,21 +632,80 @@
 
         // Function to display model metadata
         function displayModelMetadata(metadata) {
+            console.log("displayModelMetadata called with:", metadata); // <-- Log input metadata
+            
             if (!metadata) {
+                console.log("No metadata provided, hiding area."); // <-- Log missing metadata
                 metadataArea.classList.add('hidden');
                 return;
             }
 
-            // Clear previous metadata
-            metadataTable.innerHTML = '';
+            // Get containers
+            const provenanceContainer = document.getElementById('provenanceContainer');
+            const metadataTableBody = document.getElementById('metadataTable').querySelector('tbody');
             
-            // Display important metadata properties first
+            if (!provenanceContainer || !metadataTableBody) {
+                console.error("Could not find metadata or provenance containers!");
+                return;
+            }
+            
+            // Clear previous content
+            provenanceContainer.innerHTML = '';
+            metadataTableBody.innerHTML = '';
+            
+            // Display important metadata properties first in the table
             const priorityKeys = [
                 'modelName', 'architecture', 'quantization', 'ggufVersion',
                 'contextLength', 'embeddingLength', 'headCount', 'headCountKv'
             ];
             
-            // Add priority keys first
+            // Populate Provenance Info container
+            const hasProvenance = metadata.downloadDate || metadata.sourceURL || metadata.fileName || metadata.fileSize;
+            console.log("Has provenance fields?", hasProvenance); // <-- Log provenance check result
+            
+            if (hasProvenance) {
+                console.log("Populating provenance info..."); // <-- Log populating provenance
+                const provenanceInfoElement = document.createElement('div');
+                provenanceInfoElement.className = 'provenance-info';
+                // Add styling (can also move to CSS)
+                provenanceInfoElement.style.padding = '0.75rem 1rem';
+                provenanceInfoElement.style.backgroundColor = 'var(--primary-light)';
+                provenanceInfoElement.style.borderRadius = 'var(--border-radius)';
+                provenanceInfoElement.style.fontSize = '0.875rem';
+                
+                let provenanceText = '<strong>Model Provenance</strong><br>';
+                
+                if (metadata.sourceURL) {
+                    const displayURL = metadata.sourceURL.length > 60 ? metadata.sourceURL.substring(0, 57) + '...' : metadata.sourceURL;
+                    provenanceText += `Source: <a href="${metadata.sourceURL}" target="_blank" title="${metadata.sourceURL}">${displayURL}</a><br>`;
+                }
+                
+                if (metadata.downloadDate) {
+                    try {
+                      const date = new Date(metadata.downloadDate);
+                      const formattedDate = date.toLocaleString();
+                      provenanceText += `Added: ${formattedDate}<br>`;
+                    } catch (e) {
+                      provenanceText += `Added: ${metadata.downloadDate} (Invalid Date)<br>`;
+                    }
+                }
+                
+                if (metadata.fileName) {
+                    provenanceText += `File: ${metadata.fileName}<br>`;
+                }
+                
+                if (metadata.fileSize) {
+                    const fileSizeMB = (metadata.fileSize / (1024 * 1024)).toFixed(2);
+                    provenanceText += `Size: ${fileSizeMB} MB`;
+                }
+                
+                provenanceInfoElement.innerHTML = provenanceText;
+                provenanceContainer.appendChild(provenanceInfoElement);
+            } else {
+                console.log("No provenance fields found in metadata to display."); // <-- Log if no provenance
+            }
+            
+            // Populate Metadata Table - Add priority keys first
             priorityKeys.forEach(key => {
                 if (metadata[key] !== undefined) {
                     const row = document.createElement('tr');
@@ -650,19 +713,20 @@
                         <td class="metadata-key">${formatKey(key)}</td>
                         <td>${formatValue(metadata[key])}</td>
                     `;
-                    metadataTable.appendChild(row);
+                    metadataTableBody.appendChild(row);
                 }
             });
             
-            // Add other metadata properties
+            // Add other metadata properties to the table
             for (const [key, value] of Object.entries(metadata)) {
-                // Skip priority keys already displayed and undefined values
-                if (priorityKeys.includes(key) || value === undefined) {
+                // Skip priority keys already displayed and undefined/null values
+                if (priorityKeys.includes(key) || value === undefined || value === null) {
                     continue;
                 }
                 
-                // Skip internal properties
-                if (key.startsWith('_') || typeof value === 'function') {
+                // Skip internal properties or provenance data (already handled)
+                if (key.startsWith('_') || typeof value === 'function' || 
+                    ['sourceURL', 'downloadDate', 'fileName', 'fileSize'].includes(key)) {
                     continue;
                 }
                 
@@ -671,10 +735,11 @@
                     <td class="metadata-key">${formatKey(key)}</td>
                     <td>${formatValue(value)}</td>
                 `;
-                metadataTable.appendChild(row);
+                metadataTableBody.appendChild(row);
             }
             
             // Show the metadata area
+            console.log("Making metadata area visible."); // <-- Log visibility change
             metadataArea.classList.remove('hidden');
         }
         
@@ -829,7 +894,7 @@
             try {
                  llamaRunner.generateText(
                     prompt,
-                    { temp: 0.4, n_predict: 400 },
+                    { temp: 0.7, n_predict: 150 },
                     (token) => {
                         // Stream tokens
                         currentLine += token;

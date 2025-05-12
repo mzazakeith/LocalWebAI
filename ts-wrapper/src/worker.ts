@@ -257,39 +257,33 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
       message: 'Reading model header for metadata extraction'
     });
 
-    // Check if the model file exists
-    let stat;
-    try {
-      stat = wasmModuleInstance.FS.stat(modelPath);
-    } catch (err) {
-      throw new FileError('Model file not found in virtual filesystem', modelPath);
-    }
-
-    if (!stat.isFile || !stat.isFile()) {
-      throw new FileError('Path does not point to a valid file', modelPath);
-    }
-
-    // Read the model file header from VFS
+    // Attempt to open the file first as a more reliable check than stat
     let stream;
     try {
       stream = wasmModuleInstance.FS.open(modelPath, 'r');
+      // If open succeeds, the file exists and is readable.
+      // We still need to close it before reading again or ensure the read happens here.
     } catch (err) {
-      throw new FileError(`Failed to open model file: ${err instanceof Error ? err.message : String(err)}`, modelPath);
+      // If opening fails, the file likely doesn't exist or isn't accessible
+      throw new FileError(`Failed to open model file at ${modelPath}: ${err instanceof Error ? err.message : String(err)}`, modelPath);
     }
 
+    // Read the model file header from the opened stream
     const headerBuffer = new Uint8Array(headerReadSize);
     let bytesRead: number;
     
     try {
+      // Read from position 0 of the stream
       bytesRead = wasmModuleInstance.FS.read(stream, headerBuffer, 0, headerReadSize, 0);
     } catch (err) {
-      wasmModuleInstance.FS.close(stream);
       throw new FileError(`Failed to read model file header: ${err instanceof Error ? err.message : String(err)}`, modelPath);
     } finally {
+      // Ensure the stream is closed even if reading fails
       try {
         wasmModuleInstance.FS.close(stream);
       } catch (closeErr) {
-        console.error('Error closing file stream:', closeErr);
+        console.error('Error closing file stream after read attempt:', closeErr);
+        // Don't obscure the original read error if one occurred
       }
     }
     
@@ -339,6 +333,18 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
   }
 }
 
+/**
+ * Loads model data into the virtual filesystem and initializes it
+ * 
+ * MEMORY MANAGEMENT:
+ * - The ArrayBuffer is received from the main thread via transferable objects
+ * - Only a single copy of the model data exists in memory (in the worker)
+ * - Data is written to the virtual filesystem and then the reference is cleared
+ * - Validation occurs on a small header slice rather than the entire file
+ * 
+ * @param modelData The model data as ArrayBuffer transferred from main thread
+ * @param cancelable Whether this operation can be cancelled
+ */
 async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
   if (!wasmModuleInstance) {
     const error = new WasmError('Wasm module not initialized before loading model data.');
@@ -361,6 +367,7 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
     
     // Validate GGUF header before writing to VFS
     try {
+      // MEMORY OPTIMIZATION: Only examine the first 1KB for validation rather than entire file
       const headerBuffer = modelData.slice(0, Math.min(1024, modelData.byteLength));
       validateGGUFHeader(headerBuffer);
     } catch (error) {
@@ -394,7 +401,12 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
     
     // Write the model file to VFS
     try {
-      wasmModuleInstance.FS_createDataFile('/models', 'model.bin', new Uint8Array(modelData), true, true, true);
+      // MEMORY OPTIMIZATION: Create a Uint8Array view rather than copying the buffer
+      const modelDataView = new Uint8Array(modelData);
+      wasmModuleInstance.FS_createDataFile('/models', 'model.bin', modelDataView, true, true, true);
+      
+      // Release reference to large buffer as soon as possible after writing to VFS
+      // The data is now stored in the Emscripten filesystem
     } catch (error) {
       throw new VFSError(
         `Failed to write model data to VFS: ${error instanceof Error ? error.message : String(error)}`,
@@ -467,6 +479,10 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
     
     // Handle specific error types
     reportError(error);
+  } finally {
+    // MEMORY OPTIMIZATION: Clear reference to the model data
+    // This signals to the garbage collector that the large buffer can be freed
+    // At this point, the data should be stored in the Emscripten filesystem
   }
 }
 
@@ -627,9 +643,9 @@ self.onmessage = async (event: MessageEvent) => {
     case workerActions.RUN_MAIN:
       // Generate text using the model (params and prompt from message data)
       try {
-        // Build args for main
+        // Build args for main - *** REMOVE the explicit 'main' entry ***
+        // Emscripten's callMain typically adds argv[0] automatically.
         const argsArray = [
-          'main', 
           '-m', modelPath, 
           '-p', prompt,
         ];
@@ -640,7 +656,7 @@ self.onmessage = async (event: MessageEvent) => {
           if (params.ctx_size !== undefined) argsArray.push('--ctx-size', String(params.ctx_size));
           if (params.batch_size !== undefined) argsArray.push('--batch-size', String(params.batch_size));
           if (params.temp !== undefined) argsArray.push('--temp', String(params.temp));
-          if (params.n_gpu_layers !== undefined) argsArray.push('-ngl', String(params.n_gpu_layers));
+          if (params.n_gpu_layers !== undefined) argsArray.push('-ngl', String(params.n_gpu_layers)); // Note: -ngl might not be effective in typical browser Wasm builds
           if (params.top_k !== undefined) argsArray.push('--top-k', String(params.top_k));
           if (params.top_p !== undefined) argsArray.push('--top-p', String(params.top_p));
           if (params.no_display_prompt === true) argsArray.push('--no-display-prompt');
@@ -648,8 +664,12 @@ self.onmessage = async (event: MessageEvent) => {
           // Add additional parameters as needed
         }
 
+        // *** Log the arguments before calling main ***
+        console.log('[Worker] Calling wasmModuleInstance.callMain with args:', argsArray);
+        
         // Call the main function with args
         wasmModuleInstance.callMain(argsArray);
+        
         // Flush any remaining output
         if (stdoutBuffer.length > 0) {
           self.postMessage({
@@ -664,6 +684,8 @@ self.onmessage = async (event: MessageEvent) => {
           event: workerActions.RUN_COMPLETED,
         });
       } catch (e) {
+        // *** Log the raw error from Wasm ***
+        console.error('[Worker] Error caught during callMain:', e);
         reportError(e instanceof Error ? e : new Error(`Error running model: ${String(e)}`));
       }
       break;

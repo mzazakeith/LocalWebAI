@@ -258,14 +258,23 @@ export class LlamaRunner {
 
   /**
    * Validates and handles the model metadata received from the worker
-   * @param metadata The parsed model metadata
+   * Merges worker-parsed metadata with existing provenance information.
+   * 
+   * @param workerMetadata The parsed model metadata received from the worker
    */
-  private async handleModelMetadata(metadata: ModelSpecification): Promise<void> {
-    // Store the metadata locally
-    this.currentModelMetadata = metadata;
+  private async handleModelMetadata(workerMetadata: ModelSpecification): Promise<void> {
+    // Start with the existing metadata (which should have provenance)
+    // Or initialize a new object if none exists yet
+    const mergedMetadata: ModelSpecification = { 
+        ...(this.currentModelMetadata || {}), // Keep existing fields (like provenance)
+        ...workerMetadata // Overwrite with worker-parsed fields, worker data takes precedence for GGUF fields
+    };
+    
+    // Store the merged metadata locally
+    this.currentModelMetadata = mergedMetadata;
 
-    // Validate the metadata
-    const validationResult = this.validateModelMetadata(metadata);
+    // Validate the merged metadata
+    const validationResult = this.validateModelMetadata(mergedMetadata);
     if (validationResult.error) {
       console.error('Model metadata validation failed:', validationResult.error);
       
@@ -295,34 +304,50 @@ export class LlamaRunner {
       });
     }
 
-    // Report that we have metadata
+    // Report that we have the merged metadata
     this.reportProgress({
-      metadata: metadata,
+      metadata: mergedMetadata, // Report with the merged data
       message: 'Model metadata parsed successfully'
     });
 
     // If we have a current modelId, update the model's metadata in the cache
+    // with the complete merged information
     if (this.currentModelId) {
       try {
-        // Retrieve the model data from cache
+        // Retrieve the model data from cache (we only need existence check here technically)
         const cachedModelData = await this.modelCache.getModelFromCache(this.currentModelId);
         
         if (cachedModelData) {
-          // Add provenance information
-          if (typeof this.currentModelId === 'string' && this.currentModelId.startsWith('http')) {
-            metadata.sourceURL = this.currentModelId;
+          // Ensure provenance is correctly set in the merged data before caching
+          if (typeof this.currentModelId === 'string' && this.currentModelId.startsWith('http') && !mergedMetadata.sourceURL) {
+            mergedMetadata.sourceURL = this.currentModelId;
           }
-          metadata.downloadDate = new Date().toISOString();
+          if (!mergedMetadata.downloadDate) {
+             mergedMetadata.downloadDate = new Date().toISOString();
+          }
           
-          // Update the cache with the new metadata
-          await this.modelCache.cacheModel(this.currentModelId, cachedModelData, metadata);
-          console.log('Updated model cache with metadata for:', this.currentModelId);
+          // Update the cache with the complete merged metadata
+          await this.modelCache.cacheModel(this.currentModelId, cachedModelData, mergedMetadata);
+          console.log('Updated model cache with merged metadata for:', this.currentModelId);
+          
+          // MEMORY OPTIMIZATION: Release reference to cached data buffer if no longer needed
+          // Note: This might not be necessary if getModelFromCache doesn't hold onto it,
+          // but explicit cleanup can be safer depending on cache implementation.
+          // cachedModelData = null; 
         }
       } catch (err) {
-        console.warn('Failed to update model cache with metadata:', err);
+        console.warn('Failed to update model cache with merged metadata:', err);
         // Non-fatal error, continue with model load
       }
     }
+    
+    // --- UI Update Trigger --- 
+    // We can trigger the UI update here *after* merging and validation
+    // This ensures the UI always shows the most complete picture.
+    // Note: The progress callback might have already updated the UI if called earlier,
+    // but calling displayModelMetadata directly ensures it uses the final merged data.
+    // Example (if displayModelMetadata was globally accessible or passed in):
+    // displayModelMetadata(mergedMetadata);
   }
 
   /**
@@ -755,36 +780,50 @@ export class LlamaRunner {
             fileSize: modelData.byteLength,
             sourceURL: typeof source === 'string' ? source : undefined
           };
+          
+          // *** Assign initial spec (with provenance) to currentModelMetadata ***
+          // This ensures it's available for merging when worker returns GGUF data
+          this.currentModelMetadata = initialSpec; 
 
           // Pass modelFileName and modelContentType if available (from File object)
           const modelFileName = typeof source !== 'string' ? source.name : undefined;
           const modelContentType = typeof source !== 'string' ? source.type : undefined;
           
           try {
-          // Store with initial specification - will be updated later with parsed data
-          await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
+            // Store with initial specification - will be updated later with parsed data
+            await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
+
+            // Check for abort before sending to worker
+            if (abortSignal.aborted) {
+              handleAbort();
+              return;
+            }
+            
+            // Include a cancelable flag with the model data
+            this.worker?.postMessage({
+              event: workerActions.LOAD_MODEL_DATA,
+              modelData: modelData, // Send the original buffer
+              cancelable: true // Indicate this operation can be cancelled
+            }, [modelData]); // Transfer buffer
+
           } catch (err) {
             // Log cache error but continue loading
             console.warn(new CacheError(
               `Failed to cache model: ${err instanceof Error ? err.message : String(err)}`,
               actualModelId
             ));
-            // Don't throw - we can proceed even if caching fails
+            
+            // If caching failed, still send the data to the worker
+            this.worker?.postMessage({
+              event: workerActions.LOAD_MODEL_DATA,
+              modelData: modelData, // Send the original buffer
+              cancelable: true
+            }, [modelData]); // Transfer buffer
           }
-
-          // Check for abort before sending to worker
-          if (abortSignal.aborted) {
-            handleAbort();
-            return;
-          }
-
-          // Include a cancelable flag with the model data
-          this.worker?.postMessage({
-            event: workerActions.LOAD_MODEL_DATA,
-            modelData: modelData,
-            cancelable: true // Indicate this operation can be cancelled
-          });
-          // Again, promise resolves on INITIALIZED from worker
+          
+          // Clear reference - buffer is transferred to worker
+          modelData = null;
+          
         } else {
             throw new FileError('Model data could not be retrieved');
         }

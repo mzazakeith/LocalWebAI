@@ -1,11 +1,18 @@
 /**
  * Custom error types for the LocalWebAI library
  * Provides specific error classes for different failure scenarios during model loading and operation
+ * 
+ * This module implements a comprehensive error hierarchy for the LocalWebAI system.
+ * It enables precise error classification, propagation, and user-friendly reporting
+ * across various failure scenarios - from network issues to model compatibility problems.
  */
 
 /**
  * Base error class for all LocalWebAI errors
- * Allows for categorizing errors and providing structured error information
+ * 
+ * This class serves as the foundation for the error hierarchy, enabling
+ * type-checking and consistent error handling throughout the application.
+ * All specific error types extend this base class for consistency.
  */
 export class LocalWebAIError extends Error {
   constructor(message: string) {
@@ -18,8 +25,17 @@ export class LocalWebAIError extends Error {
 
 /**
  * Network-related errors (fetch failures, timeouts, etc.)
+ * 
+ * Used when there are problems downloading models or other resources
+ * from remote URLs, including connection failures, HTTP errors,
+ * timeouts, and CORS issues.
  */
 export class NetworkError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param status Optional HTTP status code if available
+   * @param url Optional URL that caused the error
+   */
   constructor(message: string, public readonly status?: number, public readonly url?: string) {
     super(`Network error: ${message}${status ? ` (status ${status})` : ''}${url ? ` for ${url}` : ''}`);
   }
@@ -27,8 +43,16 @@ export class NetworkError extends LocalWebAIError {
 
 /**
  * File-related errors (read failures, format issues, etc.)
+ * 
+ * Used when there are problems reading from or writing to files,
+ * particularly when dealing with user-uploaded model files.
+ * This includes file access issues, corruption, or format mismatches.
  */
 export class FileError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param fileName Optional name of the file that caused the error
+   */
   constructor(message: string, public readonly fileName?: string) {
     super(`File error: ${message}${fileName ? ` (${fileName})` : ''}`);
   }
@@ -36,8 +60,17 @@ export class FileError extends LocalWebAIError {
 
 /**
  * Errors related to the GGUF file format and parsing
+ * 
+ * Used when the model file is recognized as GGUF but contains
+ * parsing issues, invalid structures, or corrupted data within the format.
+ * This is different from format mismatches (which use FileError)
+ * or version incompatibilities (which use ModelCompatibilityError).
  */
 export class GGUFParsingError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param details Optional object with additional details about the parsing error
+   */
   constructor(message: string, public readonly details?: any) {
     super(`GGUF parsing error: ${message}`);
     this.details = details;
@@ -46,8 +79,18 @@ export class GGUFParsingError extends LocalWebAIError {
 
 /**
  * Errors related to model compatibility
+ * 
+ * Used when a model is not compatible with the current system,
+ * typically due to version mismatches in the GGUF format or
+ * other compatibility constraints.
  */
 export class ModelCompatibilityError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param actualVersion Optional version found in the model
+   * @param minSupported Optional minimum supported version
+   * @param maxSupported Optional maximum supported version
+   */
   constructor(
     message: string, 
     public readonly actualVersion?: number, 
@@ -60,8 +103,16 @@ export class ModelCompatibilityError extends LocalWebAIError {
 
 /**
  * Errors related to caching (IndexedDB) operations
+ * 
+ * Used when there are issues storing, retrieving, or managing
+ * cached models in the browser's IndexedDB storage. This includes
+ * quota errors, permission issues, or data corruption in the cache.
  */
 export class CacheError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param modelId Optional identifier of the model that caused the cache error
+   */
   constructor(message: string, public readonly modelId?: string) {
     super(`Cache error: ${message}${modelId ? ` for model ${modelId}` : ''}`);
   }
@@ -69,8 +120,16 @@ export class CacheError extends LocalWebAIError {
 
 /**
  * Errors related to the virtual file system (VFS) in the Wasm worker
+ * 
+ * Used when there are problems with the Emscripten virtual filesystem
+ * used by the WebAssembly module, such as file creation failures,
+ * permission issues, or memory constraints.
  */
 export class VFSError extends LocalWebAIError {
+  /**
+   * @param message The error message
+   * @param path Optional VFS path that caused the error
+   */
   constructor(message: string, public readonly path?: string) {
     super(`VFS error: ${message}${path ? ` (${path})` : ''}`);
   }
@@ -78,8 +137,15 @@ export class VFSError extends LocalWebAIError {
 
 /**
  * Errors related to Wasm initialization or execution
+ * 
+ * Used when there are problems with the WebAssembly module itself,
+ * such as initialization failures, memory limitations, or
+ * incompatibility with the browser environment.
  */
 export class WasmError extends LocalWebAIError {
+  /**
+   * @param message The error message about the WebAssembly issue
+   */
   constructor(message: string) {
     super(`WebAssembly error: ${message}`);
   }
@@ -87,8 +153,15 @@ export class WasmError extends LocalWebAIError {
 
 /**
  * Errors raised when an operation is cancelled by the user
+ * 
+ * Used when the user explicitly cancels an operation,
+ * such as model loading, through the UI or programmatically
+ * via an AbortController.
  */
 export class OperationCancelledError extends LocalWebAIError {
+  /**
+   * @param message Optional custom message about the cancellation
+   */
   constructor(message: string = "Operation cancelled by user") {
     super(message);
   }
@@ -96,8 +169,15 @@ export class OperationCancelledError extends LocalWebAIError {
 
 /**
  * Errors occurring during model initialization or execution
+ * 
+ * Used when there are problems initializing or running the model
+ * after it has been successfully loaded, such as insufficient memory,
+ * invalid inference parameters, or internal model errors.
  */
 export class ModelInitializationError extends LocalWebAIError {
+  /**
+   * @param message The error message about the initialization issue
+   */
   constructor(message: string) {
     super(`Model initialization error: ${message}`);
   }
@@ -105,7 +185,14 @@ export class ModelInitializationError extends LocalWebAIError {
 
 /**
  * Function to determine the appropriate error class based on error details
- * Useful for converting generic errors to more specific types
+ * 
+ * This function examines arbitrary errors and converts them to specific
+ * LocalWebAIError subtypes based on their characteristics. It's used to
+ * ensure consistent error handling even when errors originate from
+ * third-party code or browser APIs.
+ * 
+ * @param error Any error object or string to classify
+ * @returns A properly typed LocalWebAIError instance
  */
 export function classifyError(error: any): LocalWebAIError {
   // If the error is already a LocalWebAIError, return it as is

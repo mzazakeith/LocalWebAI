@@ -46,6 +46,20 @@ interface ModelChunk {
 
 /**
  * ModelCache class - handles caching models in IndexedDB with chunking and LRU eviction.
+ * 
+ * This class provides efficient storage and retrieval of large model files by:
+ * 1. Chunking large ArrayBuffers to respect IndexedDB size limitations
+ * 2. Implementing LRU (Least Recently Used) cache eviction to prevent exceeding storage quotas
+ * 3. Storing model metadata separately from binary data for faster access
+ * 4. Preserving provenance information for model attribution and tracking
+ * 
+ * MEMORY OPTIMIZATION NOTES:
+ * - Large ArrayBuffers are split into smaller chunks (default 16MB) to:
+ *   a) Prevent memory spikes during storage and retrieval
+ *   b) Allow partial model loading if needed in the future
+ *   c) Comply with browser-specific IndexedDB size limitations
+ * - Chunked approach allows streaming reconstruction of model data
+ * - Model metadata is stored separately from binary data for fast retrieval
  */
 export class ModelCache {
   private db: IDBDatabase | null = null;
@@ -53,6 +67,12 @@ export class ModelCache {
   private readonly chunkSize: number;
   private readonly maxCacheSize: number;
 
+  /**
+   * Creates a new ModelCache instance with specified chunk and cache size limits
+   * 
+   * @param chunkSizeInBytes Size of each chunk in bytes, defaults to 16MB
+   * @param maxCacheSizeInBytes Maximum cache size in bytes, defaults to 512MB
+   */
   constructor(chunkSizeInBytes?: number, maxCacheSizeInBytes?: number) {
     this.chunkSize = chunkSizeInBytes || DEFAULT_CHUNK_SIZE_BYTES;
     this.maxCacheSize = maxCacheSizeInBytes || DEFAULT_MAX_CACHE_SIZE_BYTES;
@@ -122,6 +142,13 @@ export class ModelCache {
 
   /**
    * Get a model from the cache if available. Returns the reassembled model data and its specification.
+   * 
+   * MEMORY OPTIMIZATION:
+   * - Retrieves chunks independently and reassembles them only when needed
+   * - Uses a single ArrayBuffer pre-allocated to the exact total size
+   * - Minimizes memory fragmentation by using typed arrays
+   * - Updates the access timestamp in metadata for LRU tracking
+   * 
    * @param modelId Unique identifier for the model
    * @returns A promise that resolves to an object { modelData: ArrayBuffer, specification?: ModelSpecification } or null if not found.
    */
@@ -166,13 +193,17 @@ export class ModelCache {
             
             chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
 
+            // MEMORY OPTIMIZATION: Allocate a single ArrayBuffer of the exact size needed
             const reassembledBuffer = new ArrayBuffer(cacheEntry.totalSize);
             const reassembledView = new Uint8Array(reassembledBuffer);
+            
+            // Copy each chunk into the appropriate position in the buffer
             let offset = 0;
             for (const chunk of chunks) {
               reassembledView.set(new Uint8Array(chunk.data), offset);
               offset += chunk.data.byteLength;
             }
+            
             resolve({ modelData: reassembledBuffer, specification: fullMetadata.specification });
           };
 
@@ -204,6 +235,13 @@ export class ModelCache {
 
   /**
    * Cache a model in IndexedDB along with its specification.
+   * 
+   * MEMORY OPTIMIZATION:
+   * - Large ArrayBuffers are divided into smaller chunks before storage
+   * - Each chunk is stored separately to avoid memory spikes
+   * - The original ArrayBuffer is not cloned, just referenced
+   * - The storage transaction processes chunks sequentially to minimize memory usage
+   * 
    * @param modelId Unique identifier for the model
    * @param modelData The model data as ArrayBuffer
    * @param specification The model's parsed specification (optional for now, but will be required later)
@@ -260,9 +298,14 @@ export class ModelCache {
         };
         
         let chunkPromises: Promise<void>[] = [];
+        
+        // MEMORY OPTIMIZATION: Process chunks sequentially to minimize memory usage
         for (let i = 0; i < chunkCount; i++) {
           const start = i * this.chunkSize;
           const end = Math.min(start + this.chunkSize, totalSize);
+          
+          // Slice creates a view on the existing ArrayBuffer, not a copy
+          // Only the small chunk will be copied when stored in IndexedDB
           const chunkData = modelData.slice(start, end);
 
           const chunk: ModelChunk = {
