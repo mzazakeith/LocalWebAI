@@ -10,7 +10,7 @@ Based on initial research, we will proceed using Emscripten's Node.js output (`-
 
 The implementation will proceed in the following phases:
 
-###p Phase A: Build System Setu (`llama-cpp-wasm`)
+### Phase A: Build System Setup (`llama-cpp-wasm`)
 
 **Goal:** Configure the `llama-cpp-wasm` build system to produce Wasm artifacts suitable for Node.js using `worker_threads`.
 
