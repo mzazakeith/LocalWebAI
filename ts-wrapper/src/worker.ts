@@ -25,6 +25,15 @@ interface EmscriptenModule {
 import { parseGGUFHeader } from './gguf-parser.js';
 import { ModelSpecification } from './model-spec.js';
 import { LoadingStage } from './loading-progress.js';
+import { 
+  GGUFParsingError, 
+  ModelCompatibilityError, 
+  VFSError, 
+  WasmError,
+  OperationCancelledError,
+  ModelInitializationError,
+  FileError
+} from './errors.js';
 
 // Define the expected structure of Module factory from main.js (compiled llama.cpp)
 // eslint-disable-next-line  @typescript-eslint/no-explicit-any
@@ -119,11 +128,60 @@ function cleanupAfterCancellation() {
 
   self.postMessage({
     event: 'ERROR',
-    error: 'Model loading cancelled by user'
+    error: new OperationCancelledError().message,
+    errorDetails: {
+      name: 'OperationCancelledError',
+      message: 'Model loading cancelled by user'
+    }
   });
 
   // Reset cancellation state
   resetCancellationState();
+}
+
+/**
+ * Posts an error to the main thread with structured error information
+ */
+function reportError(error: Error | string, stage: LoadingStage = LoadingStage.ERROR) {
+  let errorMsg: string;
+  let errorDetails: any = {};
+  
+  if (error instanceof Error) {
+    errorMsg = error.message;
+    errorDetails.name = error.constructor.name;
+    errorDetails.message = error.message;
+    
+    // Include additional properties for specific error types
+    if ('actualVersion' in error && typeof (error as any).actualVersion === 'number') {
+      errorDetails.actualVersion = (error as any).actualVersion;
+      errorDetails.minSupported = (error as any).minSupported;
+      errorDetails.maxSupported = (error as any).maxSupported;
+    }
+    
+    if ('details' in error) {
+      errorDetails.details = (error as any).details;
+    }
+    
+    if ('path' in error) {
+      errorDetails.path = (error as any).path;
+    }
+  } else {
+    errorMsg = String(error);
+    errorDetails.message = errorMsg;
+  }
+
+  // First report through the progress channel
+  reportProgress(stage, {
+    message: errorMsg,
+    error: errorMsg
+  });
+
+  // Then send a structured error event
+  self.postMessage({
+    event: 'ERROR',
+    error: errorMsg,
+    errorDetails: errorDetails
+  });
 }
 
 /**
@@ -144,14 +202,52 @@ function reportProgress(stage: LoadingStage, details: {
 }
 
 /**
+ * Examines a file header to check if it's a valid GGUF file 
+ * and confirm version compatibility.
+ * @param buffer The ArrayBuffer containing file header bytes
+ * @throws ModelCompatibilityError or GGUFParsingError if there's an issue
+ */
+function validateGGUFHeader(buffer: ArrayBuffer): void {
+  if (!buffer || buffer.byteLength < 8) {
+    throw new GGUFParsingError(
+      "Insufficient data to validate file format (minimum 8 bytes required)",
+      { byteLength: buffer?.byteLength ?? 0 }
+    );
+  }
+
+  const dataView = new DataView(buffer);
+  
+  // Check magic number "GGUF" (0x46554747 in little-endian)
+  const magic = dataView.getUint32(0, true);
+  if (magic !== 0x46554747) {
+    throw new GGUFParsingError(
+      `Invalid file format: Not a GGUF file (magic number mismatch)`,
+      { expected: 0x46554747, actual: magic, hexActual: `0x${magic.toString(16).toUpperCase()}` }
+    );
+  }
+
+  // Check version
+  const version = dataView.getUint32(4, true);
+  const minSupported = 2;
+  const maxSupported = 3;
+  
+  if (version < minSupported || version > maxSupported) {
+    throw new ModelCompatibilityError(
+      `Unsupported GGUF version`,
+      version,
+      minSupported,
+      maxSupported
+    );
+  }
+}
+
+/**
  * Parses model metadata from the loaded model file in VFS
  */
 async function parseModelMetadata(): Promise<ModelSpecification | null> {
   if (!wasmModuleInstance) {
-    console.error('Wasm module not initialized when trying to parse model metadata');
-    reportProgress(LoadingStage.ERROR, {
-      message: 'Wasm module not initialized when trying to parse model metadata'
-    });
+    const error = new WasmError('Wasm module not initialized when trying to parse model metadata');
+    reportError(error);
     return null;
   }
 
@@ -161,23 +257,74 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
       message: 'Reading model header for metadata extraction'
     });
 
+    // Check if the model file exists
+    let stat;
+    try {
+      stat = wasmModuleInstance.FS.stat(modelPath);
+    } catch (err) {
+      throw new FileError('Model file not found in virtual filesystem', modelPath);
+    }
+
+    if (!stat.isFile || !stat.isFile()) {
+      throw new FileError('Path does not point to a valid file', modelPath);
+    }
+
     // Read the model file header from VFS
-    const stream = wasmModuleInstance.FS.open(modelPath, 'r');
+    let stream;
+    try {
+      stream = wasmModuleInstance.FS.open(modelPath, 'r');
+    } catch (err) {
+      throw new FileError(`Failed to open model file: ${err instanceof Error ? err.message : String(err)}`, modelPath);
+    }
+
     const headerBuffer = new Uint8Array(headerReadSize);
-    const bytesRead = wasmModuleInstance.FS.read(stream, headerBuffer, 0, headerReadSize, 0);
-    wasmModuleInstance.FS.close(stream);
+    let bytesRead: number;
+    
+    try {
+      bytesRead = wasmModuleInstance.FS.read(stream, headerBuffer, 0, headerReadSize, 0);
+    } catch (err) {
+      wasmModuleInstance.FS.close(stream);
+      throw new FileError(`Failed to read model file header: ${err instanceof Error ? err.message : String(err)}`, modelPath);
+    } finally {
+      try {
+        wasmModuleInstance.FS.close(stream);
+      } catch (closeErr) {
+        console.error('Error closing file stream:', closeErr);
+      }
+    }
     
     if (bytesRead < 8) { // At minimum we need magic + version (8 bytes)
-      const errorMsg = `Failed to read sufficient header data: only read ${bytesRead} bytes`;
-      reportProgress(LoadingStage.ERROR, { message: errorMsg });
-      throw new Error(errorMsg);
+      throw new GGUFParsingError(
+        `Failed to read sufficient header data: only read ${bytesRead} bytes`,
+        { bytesRead, minimumRequired: 8 }
+      );
     }
 
     // Use only the bytes that were actually read
     const headerData = headerBuffer.slice(0, bytesRead).buffer;
     
+    // Validate file format and version before parsing
+    try {
+      validateGGUFHeader(headerData);
+    } catch (error) {
+      // If we caught a model compatibility or parsing error at this stage, report it with proper type
+      reportError(error instanceof Error ? error : new GGUFParsingError(String(error)));
+      return null; // Explicitly return null to satisfy TypeScript
+    }
+    
     // Parse the header data
-    const metadata = parseGGUFHeader(headerData);
+    let metadata: ModelSpecification | null = null;
+    try {
+      metadata = parseGGUFHeader(headerData);
+    } catch (error) {
+      // Re-throw specific error types
+      if (error instanceof GGUFParsingError || error instanceof ModelCompatibilityError) {
+        throw error;
+      }
+      throw new GGUFParsingError(
+        `Error parsing GGUF header: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     
     // Report successful metadata parsing
     reportProgress(LoadingStage.METADATA_PARSE_COMPLETE, {
@@ -187,19 +334,15 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
 
     return metadata;
   } catch (error) {
-    console.error('Error parsing model metadata:', error);
-    reportProgress(LoadingStage.ERROR, {
-      message: `Error parsing model metadata: ${error instanceof Error ? error.message : String(error)}`
-    });
+    reportError(error instanceof Error ? error : new GGUFParsingError(String(error)));
     return null;
   }
 }
 
 async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
   if (!wasmModuleInstance) {
-    const errorMsg = 'Wasm module not initialized before loading model data.';
-    console.error(errorMsg);
-    reportProgress(LoadingStage.ERROR, { message: errorMsg });
+    const error = new WasmError('Wasm module not initialized before loading model data.');
+    reportError(error);
     return;
   }
   
@@ -216,7 +359,25 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
       total: modelData.byteLength
     });
     
-    wasmModuleInstance.FS_createPath("/", "models", true, true);
+    // Validate GGUF header before writing to VFS
+    try {
+      const headerBuffer = modelData.slice(0, Math.min(1024, modelData.byteLength));
+      validateGGUFHeader(headerBuffer);
+    } catch (error) {
+      // If we caught a model compatibility or parsing error at this stage, report it with proper type
+      reportError(error instanceof Error ? error : new GGUFParsingError(String(error)));
+      return;
+    }
+    
+    // Create the models directory if it doesn't exist
+    try {
+      wasmModuleInstance.FS_createPath("/", "models", true, true);
+    } catch (error) {
+      throw new VFSError(
+        `Failed to create models directory in VFS: ${error instanceof Error ? error.message : String(error)}`,
+        "/models"
+      );
+    }
     
     // Check for cancellation before writing to VFS
     if (cancelable && checkCancellation()) {
@@ -231,7 +392,15 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
       total: modelData.byteLength
     });
     
-    wasmModuleInstance.FS_createDataFile('/models', 'model.bin', new Uint8Array(modelData), true, true, true);
+    // Write the model file to VFS
+    try {
+      wasmModuleInstance.FS_createDataFile('/models', 'model.bin', new Uint8Array(modelData), true, true, true);
+    } catch (error) {
+      throw new VFSError(
+        `Failed to write model data to VFS: ${error instanceof Error ? error.message : String(error)}`,
+        modelPath
+      );
+    }
     
     // Check for cancellation after VFS write
     if (cancelable && checkCancellation()) {
@@ -247,7 +416,15 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
     });
     
     // Parse the model metadata after writing the file to VFS
-    const metadata = await parseModelMetadata();
+    let metadata: ModelSpecification | null = null;
+    try {
+      metadata = await parseModelMetadata();
+    } catch (error) {
+      // For metadata parsing errors, we report but continue loading since
+      // the model might still work without complete metadata
+      console.warn("Metadata parsing error, attempting to continue with model initialization:", error);
+      // Don't rethrow to allow model loading to continue
+    }
     
     // Check for cancellation after metadata parsing
     if (cancelable && checkCancellation()) {
@@ -268,11 +445,8 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
         metadata
       });
     } else {
-      // Send error if metadata parsing failed
-      self.postMessage({
-        event: 'ERROR',
-        error: 'Failed to parse model metadata'
-      });
+      // Send warning if metadata parsing failed but we're continuing
+      console.warn('Model metadata parsing failed, continuing with limited model information');
     }
 
     // Signal that initialization is complete
@@ -288,17 +462,11 @@ async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
       metadata: metadata || undefined
     });
   } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    console.error('Error loading model data into VFS:', e);
-    // Post error message back to the main thread
-    reportProgress(LoadingStage.ERROR, {
-      message: `Error loading model data: ${errorMsg}`
-    });
+    const error = e instanceof Error ? e : new Error(String(e));
+    console.error('Error loading model data into VFS:', error);
     
-    self.postMessage({ 
-      event: 'ERROR', 
-      error: errorMsg
-    });
+    // Handle specific error types
+    reportError(error);
   }
 }
 
@@ -340,22 +508,26 @@ async function initWasmModule(wasmModulePath: string, wasmPath: string, modelUrl
       message: 'Initializing WebAssembly module'
     });
     
-    const importedModule = await import(wasmModulePath);
-    if (!importedModule.default) {
-        throw new Error('Wasm module does not have a default export. Check Emscripten build flags (MODULARIZE, EXPORT_ES6).');
-    }
-    // eslint-disable-next-line  @typescript-eslint/no-explicit-any
-    const ModuleFactory = importedModule.default as (config: Partial<EmscriptenModule>) => Promise<EmscriptenModule>; 
-    wasmModuleInstance = await ModuleFactory(emscriptenModuleConfig);
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`Error importing or instantiating wasm module from ${wasmModulePath}:`, err);
-    // Post an error back to the main thread if initialization fails
-    reportProgress(LoadingStage.ERROR, {
-      message: `Failed to load Wasm module: ${errorMsg}`
+    const importedModule = await import(wasmModulePath).catch(err => {
+      throw new WasmError(`Failed to import Wasm module from ${wasmModulePath}: ${err.message}`);
     });
     
-    self.postMessage({ event: 'ERROR', error: `Failed to load Wasm module: ${errorMsg}` });
+    if (!importedModule.default) {
+        throw new WasmError('Wasm module does not have a default export. Check Emscripten build flags (MODULARIZE, EXPORT_ES6).');
+    }
+    
+    // eslint-disable-next-line  @typescript-eslint/no-explicit-any
+    const ModuleFactory = importedModule.default as (config: Partial<EmscriptenModule>) => Promise<EmscriptenModule>; 
+    
+    try {
+    wasmModuleInstance = await ModuleFactory(emscriptenModuleConfig);
+    } catch (err) {
+      throw new WasmError(`Failed to instantiate Wasm module: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } catch (err) {
+    // Using specific WasmError type
+    const error = err instanceof WasmError ? err : new WasmError(err instanceof Error ? err.message : String(err));
+    reportError(error);
     return; // Stop further execution in the worker if Wasm module fails to load
   }
 
@@ -364,22 +536,21 @@ async function initWasmModule(wasmModulePath: string, wasmPath: string, modelUrl
   } else if (modelUrl) {
     // Fetch model from URL and load it
     try {
-      const response = await fetch(modelUrl);
-      if (!response.ok) throw new Error(`Failed to fetch model: ${response.status}`);
-      const data = await response.arrayBuffer();
-      await loadModelData(data);
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      console.error('Error fetching or loading model from URL:', e);
-      // Post error message back to the main thread
-      reportProgress(LoadingStage.ERROR, {
-        message: `Error fetching model from URL: ${errorMsg}`
+      const response = await fetch(modelUrl).catch(err => {
+        throw new Error(`Network error fetching model: ${err.message}`);
       });
       
-      self.postMessage({ 
-        event: 'ERROR', 
-        error: errorMsg
+      if (!response.ok) {
+        throw new Error(`Failed to fetch model: HTTP status ${response.status} - ${response.statusText}`);
+      }
+      
+      const data = await response.arrayBuffer().catch(err => {
+        throw new Error(`Error reading response data: ${err.message}`);
       });
+      
+      await loadModelData(data);
+    } catch (e) {
+      reportError(e instanceof Error ? e : new Error(String(e)));
     }
   } else {
      // If neither modelData nor modelUrl is provided, signal readiness (or handle as an error)
@@ -390,9 +561,11 @@ async function initWasmModule(wasmModulePath: string, wasmPath: string, modelUrl
 
 function runMain(prompt: string, params: Record<string, string | number | boolean>) {
   if (!wasmModuleInstance) {
-    console.error('Wasm module not ready to run main.');
+    reportError(new ModelInitializationError('Wasm module not ready to run main.'));
     return;
   }
+  
+  try {
   const args = [
     "--model", modelPath,
     "--n-predict", (params.n_predict || -2).toString(),
@@ -422,9 +595,13 @@ function runMain(prompt: string, params: Record<string, string | number | boolea
   try {
     wasmModuleInstance.callMain(args);
   } catch(e) {
-    console.error("Error during callMain:", e);
-    // If llama.cpp exits non-zero, Emscripten might throw an exception here.
+      throw new ModelInitializationError(`Error running model: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  } catch (error) {
+    reportError(error instanceof Error ? error : new Error(String(error)));
+    return;
   }
+  
   // Ensure any remaining buffered output is sent
   if (stdoutBuffer.length > 0) {
     const text = decoder.decode(new Uint8Array(stdoutBuffer));
@@ -487,11 +664,7 @@ self.onmessage = async (event: MessageEvent) => {
           event: workerActions.RUN_COMPLETED,
         });
       } catch (e) {
-        console.error('Error running model:', e);
-        self.postMessage({ 
-          event: 'ERROR', 
-          error: e instanceof Error ? e.message : String(e)
-        });
+        reportError(e instanceof Error ? e : new Error(`Error running model: ${String(e)}`));
       }
       break;
     case workerActions.CANCEL_LOAD:

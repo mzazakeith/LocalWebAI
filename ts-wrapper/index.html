@@ -177,6 +177,11 @@
             border-left-color: var(--error);
         }
 
+        .loading-stage.warning {
+            background-color: #fef3c7;
+            border-left-color: var(--warning);
+        }
+
         .loading-stage.complete {
             background-color: #ecfdf5;
             border-left-color: var(--success);
@@ -286,6 +291,53 @@
             100% { background-position: 0 0; }
         }
 
+        /* Error message styles */
+        .error-container {
+            background-color: #fee2e2;
+            border: 1px solid #fecaca;
+            border-left: 4px solid var(--error);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin: 1rem 0;
+            color: #991b1b;
+        }
+
+        .error-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .error-message {
+            font-size: 0.875rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .error-details {
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid #fecaca;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+
+        .error-icon {
+            width: 20px;
+            height: 20px;
+            display: inline-block;
+        }
+
+        .error-help {
+            background-color: #f8fafc;
+            border-radius: var(--border-radius);
+            padding: 0.75rem;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
         /* Responsive adjustments */
         @media (max-width: 1023px) {
             .card {
@@ -321,6 +373,19 @@
                 <div class="form-row">
                     <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
                     <button id="cancelLoadBtn" class="btn" style="background-color: var(--error); color: white; display: none;">Cancel Loading</button>
+                </div>
+                
+                <!-- Error Display -->
+                <div id="errorContainer" class="error-container hidden">
+                    <div class="error-title">
+                        <svg class="error-icon" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                        <span id="errorTitle">Error</span>
+                    </div>
+                    <div id="errorMessage" class="error-message"></div>
+                    <div id="errorHelp" class="error-help hidden"></div>
+                    <div id="errorDetails" class="error-details hidden"></div>
                 </div>
                 
                 <!-- Progress Tracking -->
@@ -397,6 +462,11 @@
         const resultText = document.getElementById('resultText');
         const metadataArea = document.getElementById('metadataArea');
         const metadataTable = document.getElementById('metadataTable').querySelector('tbody');
+        const errorContainer = document.getElementById('errorContainer');
+        const errorTitle = document.getElementById('errorTitle');
+        const errorMessage = document.getElementById('errorMessage');
+        const errorHelp = document.getElementById('errorHelp');
+        const errorDetails = document.getElementById('errorDetails');
 
         // --- Configuration: Adjust these paths --- 
         // These paths are relative to where this index.html is served from.
@@ -410,17 +480,106 @@
         let llamaRunner;
         let abortController = null;
         
+        /**
+         * Show a specific error with detailed information
+         */
+        function showError(error, title = 'Error') {
+            // Hide loading stage indicator
+            loadingStage.classList.add('error');
+            
+            // Set error information
+            errorTitle.textContent = title;
+            errorMessage.textContent = error.message || String(error);
+            
+            // Clear previous help and details
+            errorHelp.classList.add('hidden');
+            errorHelp.textContent = '';
+            errorDetails.classList.add('hidden');
+            errorDetails.textContent = '';
+            
+            // Add specific help information based on error type
+            if (error.name) {
+                // Show the error type in the title
+                errorTitle.textContent = error.name;
+                
+                // Add helpful information based on error type
+                switch (error.name) {
+                    case 'NetworkError':
+                        errorHelp.textContent = 'The model could not be downloaded. Please check your internet connection and verify the URL is correct and accessible.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'FileError':
+                        errorHelp.textContent = 'There was a problem reading the model file. Make sure the file is not corrupted and is a valid GGUF model file.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'GGUFParsingError':
+                        errorHelp.textContent = 'The model file appears to be an invalid or corrupted GGUF file. Ensure you are using a properly formatted GGUF model from a reliable source.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'ModelCompatibilityError':
+                        if (error.actualVersion !== undefined) {
+                            errorHelp.textContent = `The model uses GGUF version ${error.actualVersion}, but this app supports versions ${error.minSupported}-${error.maxSupported}. You may need to update this app or convert your model to a compatible version.`;
+                        } else {
+                            errorHelp.textContent = 'The model is not compatible with this version of the application. It may use an unsupported GGUF version or have other compatibility issues.';
+                        }
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'WasmError':
+                        errorHelp.textContent = 'There was a problem with the WebAssembly module. This could be due to browser compatibility issues or memory constraints. Try a smaller model or a different browser.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                        
+                    case 'OperationCancelledError':
+                        // For cancellation, we'll show a less severe indication
+                        errorContainer.style.backgroundColor = '#f1f5f9';
+                        errorContainer.style.borderColor = '#cbd5e1';
+                        errorContainer.style.color = '#475569';
+                        errorTitle.textContent = 'Operation Cancelled';
+                        errorHelp.textContent = 'The model loading was cancelled by the user.';
+                        errorHelp.classList.remove('hidden');
+                        break;
+                }
+                
+                // Add detailed error information if available
+                if (error.details || error.stack) {
+                    errorDetails.textContent = error.details ? JSON.stringify(error.details, null, 2) : error.stack;
+                    errorDetails.classList.remove('hidden');
+                }
+            }
+            
+            // Show the error container
+            errorContainer.classList.remove('hidden');
+        }
+        
+        /**
+         * Hide the error display
+         */
+        function hideError() {
+            errorContainer.classList.add('hidden');
+            // Reset any custom styling we might have applied
+            errorContainer.style.backgroundColor = '';
+            errorContainer.style.borderColor = '';
+            errorContainer.style.color = '';
+        }
+        
         try {
             llamaRunner = new LlamaRunner(WORKER_PATH, WASM_MODULE_PATH, WASM_PATH);
             console.log("LlamaRunner instantiated.");
         } catch (e) {
             console.error("Failed to instantiate LlamaRunner:", e);
             modelProgressText.textContent = "Error initializing runner: " + e.message;
-            alert("Error initializing LlamaRunner. Check console for details and ensure paths are correct.");
+            showError(e, 'Initialization Error');
         }
 
         // Function to update loading stage UI
         function updateLoadingStageUI(stage, message) {
+            // Hide any previous errors
+            hideError();
+            
             // Update stage indicator with appropriate styling
             loadingStage.textContent = getStageDescription(stage);
             loadingStage.className = 'loading-stage'; // Reset class
@@ -429,7 +588,7 @@
             if (stage === LoadingStage.ERROR) {
                 loadingStage.classList.add('error');
             } else if (stage === LoadingStage.CANCELLED) {
-                loadingStage.classList.add('error');
+                loadingStage.classList.add('warning');
             } else if (stage === LoadingStage.MODEL_READY) {
                 loadingStage.classList.add('complete');
             }
@@ -579,6 +738,9 @@
             let source;
             let modelId;
 
+            // Hide any previous errors
+            hideError();
+
             if (modelFile) {
                 source = modelFile;
                 modelId = `file-${modelFile.name}-${modelFile.size}`;
@@ -586,7 +748,7 @@
                 source = modelUrl;
                 modelId = modelUrl;
             } else {
-                alert("Please provide a model URL or select a model file.");
+                showError({ message: "Please provide a model URL or select a model file." }, "Input Required");
                 return;
             }
 
@@ -614,6 +776,11 @@
                     if (progressInfo.metadata && progressInfo.stage === LoadingStage.METADATA_PARSE_COMPLETE) {
                         displayModelMetadata(progressInfo.metadata);
                     }
+                    
+                    // Show error information if error stage
+                    if (progressInfo.stage === LoadingStage.ERROR && progressInfo.error) {
+                        showError({ message: progressInfo.error });
+                    }
                 }, abortController.signal);
                 
                 // Model loaded successfully
@@ -630,13 +797,11 @@
             } catch (error) {
                 console.error("Error loading model:", error);
                 
-                // Check if this was a user-initiated cancellation
-                if (error.name === 'AbortError') {
-                    updateLoadingStageUI(LoadingStage.CANCELLED, 'Model loading cancelled by user');
-                } else {
-                    updateLoadingStageUI(LoadingStage.ERROR, `Error loading model: ${error.message}`);
-                    alert(`Error loading model: ${error.message}`);
-                }
+                // Display specific error information based on error type
+                showError(error);
+                
+                // Additional UI updates
+                updateLoadingStageUI(LoadingStage.ERROR, error.message);
             } finally {
                 loadModelBtn.disabled = false;
                 cancelLoadBtn.style.display = 'none';
@@ -648,9 +813,12 @@
             if (!llamaRunner) return;
             const prompt = promptInput.value;
             if (!prompt) {
-                alert("Please enter a prompt.");
+                showError({ message: "Please enter a prompt." }, "Input Required");
                 return;
             }
+
+            // Hide any previous errors
+            hideError();
 
             generateBtn.disabled = true;
             resultText.textContent = ''; // Clear previous results
@@ -677,8 +845,7 @@
                 );
             } catch (error) {
                 console.error("Error during text generation:", error);
-                alert(`Error generating text: ${error.message}`);
-                resultText.textContent = `Error: ${error.message}`;
+                showError(error, "Generation Error");
                 resultText.classList.remove('loading');
                 generateBtn.disabled = false;
             }

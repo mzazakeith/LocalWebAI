@@ -48,9 +48,27 @@ export interface ProgressInfo {
 export type ProgressCallback = (progress: ProgressInfo) => void;
 
 /**
- * Get a human-readable description of a loading stage
+ * Error type mapping for user-friendly descriptions
  */
-export function getStageDescription(stage: LoadingStage): string {
+const ERROR_TYPE_DESCRIPTIONS: Record<string, string> = {
+  'NetworkError': 'Network Error',
+  'FileError': 'File Error',
+  'GGUFParsingError': 'Model Format Error',
+  'ModelCompatibilityError': 'Model Compatibility Error',
+  'VFSError': 'Virtual Filesystem Error',
+  'WasmError': 'WebAssembly Error',
+  'CacheError': 'Cache Storage Error',
+  'OperationCancelledError': 'Operation Cancelled',
+  'ModelInitializationError': 'Model Initialization Error',
+};
+
+/**
+ * Get a human-readable description of a loading stage
+ * @param stage The loading stage to describe
+ * @param errorType Optional error type for more specific error descriptions
+ * @returns A user-friendly description of the stage
+ */
+export function getStageDescription(stage: LoadingStage, errorType?: string): string {
   switch (stage) {
     case LoadingStage.DOWNLOADING_FROM_SOURCE:
       return 'Downloading model from source';
@@ -73,10 +91,53 @@ export function getStageDescription(stage: LoadingStage): string {
     case LoadingStage.MODEL_READY:
       return 'Model ready for use';
     case LoadingStage.ERROR:
+      // If errorType is provided, use it for a more specific description
+      if (errorType && errorType in ERROR_TYPE_DESCRIPTIONS) {
+        return `Error: ${ERROR_TYPE_DESCRIPTIONS[errorType]}`;
+      }
       return 'Error loading model';
     case LoadingStage.CANCELLED:
       return 'Model loading cancelled by user';
     default:
       return `Unknown stage: ${stage}`;
+  }
+}
+
+/**
+ * Get a more detailed explanation of a specific error type
+ * @param errorType The type of error (name of error class)
+ * @returns A user-friendly explanation of the error
+ */
+export function getErrorExplanation(errorType: string): string {
+  switch (errorType) {
+    case 'NetworkError':
+      return 'There was a problem downloading the model. Check your internet connection and verify the URL is correct.';
+      
+    case 'FileError':
+      return 'There was a problem reading the model file. Make sure the file is not corrupted and is a valid GGUF model file.';
+      
+    case 'GGUFParsingError':
+      return 'The model file appears to be an invalid or corrupted GGUF file. Ensure you are using a properly formatted GGUF model.';
+      
+    case 'ModelCompatibilityError':
+      return 'The model is not compatible with this version of the application. It may use an unsupported GGUF format version.';
+      
+    case 'CacheError':
+      return 'There was a problem storing or retrieving the model from browser storage. Your browser may have limited storage space or restrictions.';
+      
+    case 'VFSError':
+      return 'There was a problem with the virtual filesystem used to store the model in memory. This could be due to memory limitations.';
+      
+    case 'WasmError':
+      return 'There was a problem with the WebAssembly module. This could be due to browser compatibility issues or memory constraints.';
+      
+    case 'OperationCancelledError':
+      return 'The operation was cancelled by the user.';
+      
+    case 'ModelInitializationError':
+      return 'There was a problem initializing the model. This could be due to insufficient memory or incompatible model format.';
+      
+    default:
+      return 'An unexpected error occurred while loading or running the model.';
   }
 } 

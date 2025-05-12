@@ -1,6 +1,19 @@
 import { ModelCache } from './model-cache.js';
 import { ModelSpecification } from './model-spec.js'; // Import ModelSpecification
 import { ProgressCallback, ProgressInfo, LoadingStage, getStageDescription } from './loading-progress.js'; // Import progress types
+import { 
+  NetworkError, 
+  FileError, 
+  GGUFParsingError, 
+  ModelCompatibilityError, 
+  CacheError,
+  VFSError,
+  WasmError,
+  OperationCancelledError,
+  LocalWebAIError,
+  ModelInitializationError,
+  classifyError
+} from './errors.js';
 
 // Define the types for callbacks
 export type TokenCallback = (token: string) => void;
@@ -37,6 +50,19 @@ const workerActions = {
 const MIN_SUPPORTED_GGUF_VERSION = 2;
 const MAX_SUPPORTED_GGUF_VERSION = 3;
 
+// Required model metadata fields
+const REQUIRED_METADATA_FIELDS = [
+  // Critical fields that must be present for compatibility verification
+  'ggufVersion'
+];
+
+// Optional but important fields (we'll warn if missing)
+const IMPORTANT_METADATA_FIELDS = [
+  'architecture',
+  'contextLength',
+  'embeddingLength'
+];
+
 export class LlamaRunner {
   private worker: Worker | null = null;
   private modelCache: ModelCache;
@@ -70,7 +96,7 @@ export class LlamaRunner {
     this.worker = new Worker(this.workerPath, { type: 'module' });
 
     this.worker.onmessage = (event) => {
-      const { event: action, text, error, metadata, stage, ...progressDetails } = event.data;
+      const { event: action, text, error, errorDetails, metadata, stage, ...progressDetails } = event.data;
       switch (action) {
         case workerActions.INITIALIZED:
           this.isInitialized = true;
@@ -111,17 +137,56 @@ export class LlamaRunner {
         // Handle potential errors from worker
         case 'ERROR': // Assuming worker posts { event: 'ERROR', message: '...'}
             console.error('Error from worker:', error);
+            
+            // Create a proper error instance based on errorDetails if available
+            let errorInstance: Error;
+            
+            if (errorDetails) {
+              // Create specific error type based on the name
+              switch (errorDetails.name) {
+                case 'GGUFParsingError':
+                  errorInstance = new GGUFParsingError(errorDetails.message, errorDetails.details);
+                  break;
+                case 'ModelCompatibilityError':
+                  errorInstance = new ModelCompatibilityError(
+                    errorDetails.message,
+                    errorDetails.actualVersion,
+                    errorDetails.minSupported,
+                    errorDetails.maxSupported
+                  );
+                  break;
+                case 'VFSError':
+                  errorInstance = new VFSError(errorDetails.message, errorDetails.path);
+                  break;
+                case 'WasmError':
+                  errorInstance = new WasmError(errorDetails.message);
+                  break;
+                case 'OperationCancelledError':
+                  errorInstance = new OperationCancelledError(errorDetails.message);
+                  break;
+                case 'ModelInitializationError':
+                  errorInstance = new ModelInitializationError(errorDetails.message);
+                  break;
+                default:
+                  // Generic LocalWebAIError for unknown types
+                  errorInstance = new LocalWebAIError(errorDetails.message || error);
+              }
+            } else {
+              // Fallback to the error message string
+              errorInstance = classifyError(error || 'Unknown worker error');
+            }
+            
             // Report error through progress callback if available
             if (this.currentProgressCallback) {
               this.currentProgressCallback({
                 stage: LoadingStage.ERROR,
-                message: error || 'Unknown worker error',
-                error: error || 'Unknown worker error'
+                message: errorInstance.message,
+                error: errorInstance.message
               });
             }
             
             if (this.isLoadingModel && this.onModelLoadErrorCallback) {
-                this.onModelLoadErrorCallback(new Error(error || 'Unknown worker error during model load'));
+                this.onModelLoadErrorCallback(errorInstance);
             }
             this.isLoadingModel = false;
             this.onModelLoadedCallback = null;
@@ -142,17 +207,20 @@ export class LlamaRunner {
       }
       console.error(`Worker Error Details: Message: ${event.message}, Filename: ${event.filename}, Lineno: ${event.lineno}, Colno: ${event.colno}`);
 
+      // Create a specific error instance for worker errors
+      const error = new WasmError(`Worker error: ${detailedErrorMessage}`);
+
       // Report error through progress callback if available
       if (this.currentProgressCallback) {
         this.currentProgressCallback({
           stage: LoadingStage.ERROR,
-          message: detailedErrorMessage,
-          error: detailedErrorMessage
+          message: error.message,
+          error: error.message
         });
       }
 
       if (this.isLoadingModel && this.onModelLoadErrorCallback) {
-        this.onModelLoadErrorCallback(new Error(detailedErrorMessage));
+        this.onModelLoadErrorCallback(error);
       }
       this.isLoadingModel = false;
       this.onModelLoadedCallback = null;
@@ -197,22 +265,34 @@ export class LlamaRunner {
     this.currentModelMetadata = metadata;
 
     // Validate the metadata
-    const validationError = this.validateModelMetadata(metadata);
-    if (validationError) {
-      console.error('Model metadata validation failed:', validationError);
+    const validationResult = this.validateModelMetadata(metadata);
+    if (validationResult.error) {
+      console.error('Model metadata validation failed:', validationResult.error);
+      
+      // Create the appropriate error instance
+      const error = validationResult.errorInstance || 
+                    new ModelCompatibilityError(validationResult.error);
+      
       this.reportProgress({
         stage: LoadingStage.ERROR,
-        message: `Invalid model metadata: ${validationError}`,
-        error: `Invalid model metadata: ${validationError}`
+        message: error.message,
+        error: error.message
       });
       
       if (this.isLoadingModel && this.onModelLoadErrorCallback) {
-        this.onModelLoadErrorCallback(new Error(`Invalid model metadata: ${validationError}`));
+        this.onModelLoadErrorCallback(error);
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
       }
       return;
+    }
+
+    // Log any warnings
+    if (validationResult.warnings && validationResult.warnings.length > 0) {
+      validationResult.warnings.forEach(warning => {
+        console.warn('Model metadata warning:', warning);
+      });
     }
 
     // Report that we have metadata
@@ -248,35 +328,105 @@ export class LlamaRunner {
   /**
    * Validates the model metadata to ensure compatibility
    * @param metadata The model metadata to validate
-   * @returns A string with the error message if validation fails, or null if successful
+   * @returns Object with error message if validation fails, warnings array, and error instance.
    */
-  private validateModelMetadata(metadata: ModelSpecification): string | null {
+  private validateModelMetadata(metadata: ModelSpecification): { 
+    error: string | null, 
+    warnings: string[], 
+    errorInstance?: LocalWebAIError 
+  } {
+    const warnings: string[] = [];
+    
+    // Check if metadata object exists
+    if (!metadata) {
+      return {
+        error: 'No metadata provided',
+        warnings,
+        errorInstance: new ModelCompatibilityError('No metadata provided')
+      };
+    }
+    
+    // Check required fields
+    for (const field of REQUIRED_METADATA_FIELDS) {
+      if (metadata[field] === undefined) {
+        return {
+          error: `Missing required metadata field: ${field}`,
+          warnings,
+          errorInstance: new ModelCompatibilityError(`Missing required metadata field: ${field}`)
+        };
+      }
+    }
+    
     // Check GGUF version compatibility
     if (metadata.ggufVersion === undefined) {
-      return 'Missing GGUF version information';
+      return {
+        error: 'Missing GGUF version information',
+        warnings,
+        errorInstance: new ModelCompatibilityError('Missing GGUF version information')
+      };
     }
     
     if (metadata.ggufVersion < MIN_SUPPORTED_GGUF_VERSION || 
         metadata.ggufVersion > MAX_SUPPORTED_GGUF_VERSION) {
-      return `Unsupported GGUF version: ${metadata.ggufVersion}. Supported versions: ${MIN_SUPPORTED_GGUF_VERSION}-${MAX_SUPPORTED_GGUF_VERSION}`;
+      return {
+        error: `Unsupported GGUF version: ${metadata.ggufVersion}`,
+        warnings,
+        errorInstance: new ModelCompatibilityError(
+          `Unsupported GGUF version`,
+          metadata.ggufVersion,
+          MIN_SUPPORTED_GGUF_VERSION,
+          MAX_SUPPORTED_GGUF_VERSION
+        )
+      };
     }
     
-    // Other potential validations:
-    // 1. Check if critical fields are present (architecture, context length, etc.)
-    if (!metadata.architecture) {
-      console.warn('Model metadata is missing architecture information');
-      // Not fatal, but worth warning about
+    // Check for important but non-required fields
+    for (const field of IMPORTANT_METADATA_FIELDS) {
+      if (metadata[field] === undefined) {
+        warnings.push(`Missing recommended metadata field: ${field}`);
+      }
     }
     
-    // 2. Validate context length if present (e.g., must be a reasonable value)
+    // Validate context length if present (e.g., must be a reasonable value)
     if (metadata.contextLength !== undefined) {
+      if (typeof metadata.contextLength !== 'number') {
+        return {
+          error: `Invalid context length: ${metadata.contextLength}. Must be a number.`,
+          warnings,
+          errorInstance: new ModelCompatibilityError(`Invalid context length: ${metadata.contextLength}. Must be a number.`)
+        };
+      }
+      
       if (metadata.contextLength < 1 || metadata.contextLength > 32768) {
-        return `Invalid context length: ${metadata.contextLength}. Expected a value between 1 and 32768`;
+        return {
+          error: `Invalid context length: ${metadata.contextLength}. Expected a value between 1 and 32768.`,
+          warnings,
+          errorInstance: new ModelCompatibilityError(`Invalid context length: ${metadata.contextLength}. Expected a value between 1 and 32768.`)
+        };
+      }
+    }
+    
+    // Validate embedding length if present
+    if (metadata.embeddingLength !== undefined) {
+      if (typeof metadata.embeddingLength !== 'number') {
+        return {
+          error: `Invalid embedding length: ${metadata.embeddingLength}. Must be a number.`,
+          warnings,
+          errorInstance: new ModelCompatibilityError(`Invalid embedding length: ${metadata.embeddingLength}. Must be a number.`)
+        };
+      }
+      
+      if (metadata.embeddingLength < 1) {
+        return {
+          error: `Invalid embedding length: ${metadata.embeddingLength}. Must be greater than 0.`,
+          warnings,
+          errorInstance: new ModelCompatibilityError(`Invalid embedding length: ${metadata.embeddingLength}. Must be greater than 0.`)
+        };
       }
     }
     
     // All validations passed
-    return null;
+    return { error: null, warnings };
   }
 
   /**
@@ -329,6 +479,13 @@ export class LlamaRunner {
    * @param progressCallback Optional callback for detailed progress reporting.
    * @param signal Optional AbortSignal for cancellation support.
    * @returns Promise<void> Resolves when the model is loaded and ready for inference.
+   * @throws Various error types based on the specific failure, including:
+   *   - NetworkError: for URL fetch failures
+   *   - FileError: for file reading issues
+   *   - GGUFParsingError: for model format issues
+   *   - ModelCompatibilityError: for unsupported model versions
+   *   - VFSError: for virtual filesystem errors
+   *   - WasmError: for WebAssembly-related issues
    */
   public async loadModel(
     source: string | File,
@@ -337,10 +494,10 @@ export class LlamaRunner {
     signal?: AbortSignal
   ): Promise<void> {
     if (!this.worker) {
-      throw new Error('Worker not initialized.');
+      throw new WasmError('Worker not initialized.');
     }
     if (this.isLoadingModel) {
-        throw new Error('Another model is already being loaded.');
+        throw new ModelInitializationError('Another model is already being loaded.');
     }
     this.isLoadingModel = true;
     this.currentProgressCallback = progressCallback || null;
@@ -362,9 +519,12 @@ export class LlamaRunner {
           });
         }
         
-        // Reject the promise with an AbortError
+        // Create a specific error type for cancellation
+        const abortError = new OperationCancelledError('Model loading aborted by user');
+        
+        // Reject the promise with the cancellation error
         if (this.onModelLoadErrorCallback) {
-          this.onModelLoadErrorCallback(new DOMException('Model loading aborted by user', 'AbortError'));
+          this.onModelLoadErrorCallback(abortError);
         }
         
         // Clean up if we have a modelId
@@ -378,6 +538,12 @@ export class LlamaRunner {
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
+        
+        // Report through progress callback
+        this.reportProgress({
+          stage: LoadingStage.CANCELLED,
+          message: 'Model loading aborted by user'
+        });
       }
     };
 
@@ -393,7 +559,7 @@ export class LlamaRunner {
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
-        reject(new DOMException('Model loading aborted by user', 'AbortError'));
+        reject(new OperationCancelledError('Model loading aborted by user'));
         return;
       }
 
@@ -428,6 +594,12 @@ export class LlamaRunner {
         }
       } catch (err) {
         console.warn('Error retrieving from cache, will load from source:', err);
+        // Convert to specific error type but don't throw - just fall back to loading from source
+        const cacheError = new CacheError(
+          `Error retrieving from cache: ${err instanceof Error ? err.message : String(err)}`,
+          actualModelId
+        );
+        console.warn(cacheError);
         modelData = null;
       }
 
@@ -467,8 +639,17 @@ export class LlamaRunner {
           
           // Pass the abort signal to fetch
           const response = await fetch(source, { signal: abortSignal });
-          if (!response.ok) throw new Error(`Failed to download model: ${response.statusText}`);
-          if (!response.body) throw new Error('Response body is null');
+          if (!response.ok) {
+            throw new NetworkError(
+              `Failed to download model: ${response.statusText}`,
+              response.status,
+              source
+            );
+          }
+          
+          if (!response.body) {
+            throw new NetworkError('Response body is null', undefined, source);
+          }
 
           const contentLength = Number(response.headers.get('Content-Length') || '0');
           const reader = response.body.getReader();
@@ -522,7 +703,12 @@ export class LlamaRunner {
           modelData = await new Promise<ArrayBuffer>((resolveFile, rejectFile) => {
             const reader = new FileReader();
             reader.onload = (e) => resolveFile(e.target?.result as ArrayBuffer);
-            reader.onerror = (e) => rejectFile(reader.error || new Error('File reading error'));
+            reader.onerror = (e) => {
+              rejectFile(new FileError(
+                reader.error?.message || 'File reading error',
+                source.name
+              ));
+            };
             reader.onprogress = (e) => {
               if (e.lengthComputable) {
                 // Report file reading progress
@@ -538,7 +724,7 @@ export class LlamaRunner {
             // Handle abort event for FileReader
             const abortHandler = () => {
               reader.abort();
-              rejectFile(new DOMException('Model loading aborted by user', 'AbortError'));
+              rejectFile(new OperationCancelledError('Model loading aborted by user'));
             };
             abortSignal.addEventListener('abort', abortHandler, { once: true });
             
@@ -574,8 +760,17 @@ export class LlamaRunner {
           const modelFileName = typeof source !== 'string' ? source.name : undefined;
           const modelContentType = typeof source !== 'string' ? source.type : undefined;
           
+          try {
           // Store with initial specification - will be updated later with parsed data
           await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
+          } catch (err) {
+            // Log cache error but continue loading
+            console.warn(new CacheError(
+              `Failed to cache model: ${err instanceof Error ? err.message : String(err)}`,
+              actualModelId
+            ));
+            // Don't throw - we can proceed even if caching fails
+          }
 
           // Check for abort before sending to worker
           if (abortSignal.aborted) {
@@ -591,7 +786,7 @@ export class LlamaRunner {
           });
           // Again, promise resolves on INITIALIZED from worker
         } else {
-            throw new Error('Model data could not be retrieved.');
+            throw new FileError('Model data could not be retrieved');
         }
       } catch (err) {
         // Don't treat AbortError as an unexpected error
@@ -600,20 +795,25 @@ export class LlamaRunner {
           return;
         }
         
-        console.error('Error loading model:', err);
+        // Convert generic errors to specific types
+        const specificError = err instanceof Error && !(err instanceof LocalWebAIError) 
+          ? classifyError(err) 
+          : err;
+        
+        console.error('Error loading model:', specificError);
         
         // Report error through progress callback
         this.reportProgress({
           stage: LoadingStage.ERROR,
-          message: `Error loading model: ${err instanceof Error ? err.message : String(err)}`,
-          error: err instanceof Error ? err.message : String(err)
+          message: specificError instanceof Error ? specificError.message : String(specificError),
+          error: specificError instanceof Error ? specificError.message : String(specificError)
         });
         
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
         this.currentProgressCallback = null;
-        reject(err instanceof Error ? err : new Error(String(err)));
+        reject(specificError instanceof Error ? specificError : new Error(String(specificError)));
       } finally {
         // Clean up the abort event listener
         abortSignal.removeEventListener('abort', handleAbort);
@@ -632,6 +832,7 @@ export class LlamaRunner {
    * @param params Optional parameters for text generation.
    * @param tokenCallback Callback for each generated token string.
    * @param completionCallback Callback for when generation is fully complete.
+   * @throws ModelInitializationError if the model is not initialized
    */
   public generateText(
     prompt: string,
@@ -640,12 +841,12 @@ export class LlamaRunner {
     completionCallback: CompletionCallback
   ): void {
     if (!this.worker || !this.isInitialized) {
-      throw new Error('LlamaRunner is not initialized or model not loaded.');
+      throw new ModelInitializationError('LlamaRunner is not initialized or model not loaded.');
     }
     if (this.currentTokenCallback || this.currentCompletionCallback) {
         console.warn('Text generation already in progress. New request will be ignored or queued (not implemented yet).');
         // For POC, we might just throw an error or ignore
-        throw new Error("Text generation already in progress.");
+        throw new ModelInitializationError("Text generation already in progress.");
     }
 
     this.currentTokenCallback = tokenCallback;
