@@ -30,6 +30,7 @@ const workerActions = {
   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
   MODEL_METADATA: 'MODEL_METADATA', // Add the new action
   PROGRESS_UPDATE: 'PROGRESS_UPDATE', // Add progress update action
+  CANCEL_LOAD: 'CANCEL_LOAD', // Add cancel action
 };
 
 // GGUF version constraints for validation
@@ -49,6 +50,7 @@ export class LlamaRunner {
   private currentModelId: string | null = null; // Keep track of the current model ID for metadata
   private currentModelMetadata: ModelSpecification | null = null; // Store current model metadata
   private lastProgressInfo: ProgressInfo | null = null; // Track the last progress update
+  private abortController: AbortController | null = null; // For tracking active abort controller
 
   /**
    * @param workerPath Path to the compiled worker.ts (e.g., 'worker.js')
@@ -294,16 +296,45 @@ export class LlamaRunner {
   }
 
   /**
+   * Cancels the current model loading operation if one is in progress
+   * @returns True if a cancellation was initiated, false if no loading operation to cancel
+   */
+  public cancelLoading(): boolean {
+    if (!this.isLoadingModel || !this.abortController) {
+      return false;
+    }
+
+    // Signal cancellation
+    this.abortController.abort();
+    
+    // Notify the worker to cancel any operations in progress
+    if (this.worker) {
+      this.worker.postMessage({
+        event: workerActions.CANCEL_LOAD
+      });
+    }
+
+    this.reportProgress({
+      stage: LoadingStage.CANCELLED,
+      message: 'Model loading cancelled by user'
+    });
+
+    return true;
+  }
+
+  /**
    * Load a GGUF model from a URL or File object.
    * @param source URL string or File object for the GGUF model.
    * @param modelId A unique ID for caching. If not provided, URL or filename+size will be used.
    * @param progressCallback Optional callback for detailed progress reporting.
+   * @param signal Optional AbortSignal for cancellation support.
    * @returns Promise<void> Resolves when the model is loaded and ready for inference.
    */
   public async loadModel(
     source: string | File,
     modelId?: string,
-    progressCallback?: ProgressCallback
+    progressCallback?: ProgressCallback,
+    signal?: AbortSignal
   ): Promise<void> {
     if (!this.worker) {
       throw new Error('Worker not initialized.');
@@ -315,9 +346,56 @@ export class LlamaRunner {
     this.currentProgressCallback = progressCallback || null;
     this.lastProgressInfo = null;
 
+    // Create a new AbortController if no signal is provided, or use the provided one
+    this.abortController = signal ? null : new AbortController();
+    const abortSignal = signal || this.abortController!.signal;
+
+    // Set up abort handling
+    const handleAbort = () => {
+      if (this.isLoadingModel) {
+        console.log('Model loading aborted by user');
+        
+        // Notify the worker 
+        if (this.worker) {
+          this.worker.postMessage({ 
+            event: workerActions.CANCEL_LOAD 
+          });
+        }
+        
+        // Reject the promise with an AbortError
+        if (this.onModelLoadErrorCallback) {
+          this.onModelLoadErrorCallback(new DOMException('Model loading aborted by user', 'AbortError'));
+        }
+        
+        // Clean up if we have a modelId
+        if (this.currentModelId) {
+          // Best effort to remove any partial cache entries
+          this.modelCache.deleteModel(this.currentModelId).catch(err => {
+            console.warn('Error cleaning up cache after abort:', err);
+          });
+        }
+        
+        this.isLoadingModel = false;
+        this.onModelLoadedCallback = null;
+        this.onModelLoadErrorCallback = null;
+      }
+    };
+
+    // Listen for abort events
+    abortSignal.addEventListener('abort', handleAbort);
+
     return new Promise(async (resolve, reject) => {
       this.onModelLoadedCallback = resolve;
       this.onModelLoadErrorCallback = reject;
+
+      // If already aborted, reject immediately
+      if (abortSignal.aborted) {
+        this.isLoadingModel = false;
+        this.onModelLoadedCallback = null;
+        this.onModelLoadErrorCallback = null;
+        reject(new DOMException('Model loading aborted by user', 'AbortError'));
+        return;
+      }
 
       const actualModelId = modelId || (typeof source === 'string' ? source : `${source.name}-${source.size}`);
       this.currentModelId = actualModelId; // Store current model ID for metadata handling
@@ -353,6 +431,12 @@ export class LlamaRunner {
         modelData = null;
       }
 
+      // Check for abort before proceeding
+      if (abortSignal.aborted) {
+        handleAbort();
+        return;
+      }
+
       if (modelData) {
         // Report model found in cache
         this.reportProgress({
@@ -381,7 +465,8 @@ export class LlamaRunner {
             message: 'Downloading model from URL'
           });
           
-          const response = await fetch(source);
+          // Pass the abort signal to fetch
+          const response = await fetch(source, { signal: abortSignal });
           if (!response.ok) throw new Error(`Failed to download model: ${response.statusText}`);
           if (!response.body) throw new Error('Response body is null');
 
@@ -391,6 +476,12 @@ export class LlamaRunner {
           let receivedLength = 0;
 
           while (true) {
+            // Check for abort before reading
+            if (abortSignal.aborted) {
+              handleAbort();
+              return;
+            }
+
             const { done, value } = await reader.read();
             if (done) break;
             chunks.push(value);
@@ -403,6 +494,12 @@ export class LlamaRunner {
               total: contentLength,
               message: `Downloading model: ${contentLength > 0 ? Math.round((receivedLength / contentLength) * 100) : 0}%`
             });
+          }
+
+          // Check for abort before processing chunks
+          if (abortSignal.aborted) {
+            handleAbort();
+            return;
           }
 
           modelData = new Uint8Array(receivedLength).buffer;
@@ -437,8 +534,22 @@ export class LlamaRunner {
                 });
               }
             };
+            
+            // Handle abort event for FileReader
+            const abortHandler = () => {
+              reader.abort();
+              rejectFile(new DOMException('Model loading aborted by user', 'AbortError'));
+            };
+            abortSignal.addEventListener('abort', abortHandler, { once: true });
+            
             reader.readAsArrayBuffer(source);
           });
+        }
+
+        // Check for abort before sending to worker
+        if (abortSignal.aborted) {
+          handleAbort();
+          return;
         }
 
         if (modelData) {
@@ -466,15 +577,29 @@ export class LlamaRunner {
           // Store with initial specification - will be updated later with parsed data
           await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
 
+          // Check for abort before sending to worker
+          if (abortSignal.aborted) {
+            handleAbort();
+            return;
+          }
+
+          // Include a cancelable flag with the model data
           this.worker?.postMessage({
             event: workerActions.LOAD_MODEL_DATA,
             modelData: modelData,
+            cancelable: true // Indicate this operation can be cancelled
           });
           // Again, promise resolves on INITIALIZED from worker
         } else {
             throw new Error('Model data could not be retrieved.');
         }
       } catch (err) {
+        // Don't treat AbortError as an unexpected error
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          handleAbort();
+          return;
+        }
+        
         console.error('Error loading model:', err);
         
         // Report error through progress callback
@@ -489,6 +614,14 @@ export class LlamaRunner {
         this.onModelLoadErrorCallback = null;
         this.currentProgressCallback = null;
         reject(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        // Clean up the abort event listener
+        abortSignal.removeEventListener('abort', handleAbort);
+        
+        // Reset the abort controller if we created it
+        if (this.abortController && !signal) {
+          this.abortController = null;
+        }
       }
     });
   }

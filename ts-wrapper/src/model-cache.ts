@@ -311,7 +311,12 @@ export class ModelCache {
     });
   }
   
-  private async deleteModel(modelId: string, dbInstance?: IDBDatabase): Promise<void> {
+  /**
+   * Deletes a specific model from the cache
+   * @param modelId The ID of the model to delete
+   * @param dbInstance Optional database instance, useful when already in a transaction
+   */
+  public async deleteModel(modelId: string, dbInstance?: IDBDatabase): Promise<void> {
     const db = dbInstance || await this.getDb();
     return new Promise((resolve, reject) => {
         const transaction = db.transaction([METADATA_STORE_NAME, CHUNK_STORE_NAME], 'readwrite');

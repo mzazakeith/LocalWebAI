@@ -40,6 +40,7 @@ const workerActions = {
   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
   MODEL_METADATA: 'MODEL_METADATA', // New action for model metadata
   PROGRESS_UPDATE: 'PROGRESS_UPDATE', // New action for detailed progress reporting
+  CANCEL_LOAD: 'CANCEL_LOAD', // New action for cancellation support
 };
 
 let wasmModuleInstance: EmscriptenModule;
@@ -71,6 +72,59 @@ const stderr = (c: number) => {
   // For now, just log stderr to console, can be enhanced
   // console.error('stderr:', String.fromCharCode(c));
 };
+
+// Track current cancellation state
+let isCancellationRequested = false;
+
+/**
+ * Checks if the current operation has been cancelled
+ * @returns True if cancellation has been requested
+ */
+function checkCancellation(): boolean {
+  return isCancellationRequested;
+}
+
+/**
+ * Resets the cancellation state and cleans up any resources
+ */
+function resetCancellationState() {
+  isCancellationRequested = false;
+}
+
+/**
+ * Performs cleanup when cancellation occurs during model loading
+ */
+function cleanupAfterCancellation() {
+  try {
+    if (wasmModuleInstance && wasmModuleInstance.FS) {
+      // Check if model file exists and remove it if it does
+      try {
+        const stat = wasmModuleInstance.FS.stat(modelPath);
+        if (stat) {
+          console.log('Removing partially written model file due to cancellation');
+          wasmModuleInstance.FS.unlink(modelPath);
+        }
+      } catch (err) {
+        // File likely doesn't exist, which is fine
+      }
+    }
+  } catch (err) {
+    console.error('Error cleaning up after cancellation:', err);
+  }
+
+  // Report cancellation to main thread
+  reportProgress(LoadingStage.CANCELLED, {
+    message: 'Model loading cancelled by user'
+  });
+
+  self.postMessage({
+    event: 'ERROR',
+    error: 'Model loading cancelled by user'
+  });
+
+  // Reset cancellation state
+  resetCancellationState();
+}
 
 /**
  * Report loading progress to the main thread
@@ -141,7 +195,7 @@ async function parseModelMetadata(): Promise<ModelSpecification | null> {
   }
 }
 
-async function loadModelData(modelData: ArrayBuffer) {
+async function loadModelData(modelData: ArrayBuffer, cancelable = false) {
   if (!wasmModuleInstance) {
     const errorMsg = 'Wasm module not initialized before loading model data.';
     console.error(errorMsg);
@@ -150,6 +204,12 @@ async function loadModelData(modelData: ArrayBuffer) {
   }
   
   try {
+    // Check for cancellation before starting
+    if (cancelable && checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
     // Report VFS write start
     reportProgress(LoadingStage.VFS_WRITE_START, {
       message: 'Preparing to write model data to virtual filesystem',
@@ -158,6 +218,12 @@ async function loadModelData(modelData: ArrayBuffer) {
     
     wasmModuleInstance.FS_createPath("/", "models", true, true);
     
+    // Check for cancellation before writing to VFS
+    if (cancelable && checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
     // Report VFS write progress - simulating progress by reporting 50% complete
     reportProgress(LoadingStage.VFS_WRITE_PROGRESS, {
       message: 'Writing model data to virtual filesystem',
@@ -167,6 +233,12 @@ async function loadModelData(modelData: ArrayBuffer) {
     
     wasmModuleInstance.FS_createDataFile('/models', 'model.bin', new Uint8Array(modelData), true, true, true);
     
+    // Check for cancellation after VFS write
+    if (cancelable && checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
     // Report VFS write complete
     reportProgress(LoadingStage.VFS_WRITE_COMPLETE, {
       message: 'Model data written to virtual filesystem',
@@ -177,6 +249,12 @@ async function loadModelData(modelData: ArrayBuffer) {
     // Parse the model metadata after writing the file to VFS
     const metadata = await parseModelMetadata();
     
+    // Check for cancellation after metadata parsing
+    if (cancelable && checkCancellation()) {
+      cleanupAfterCancellation();
+      return;
+    }
+
     // Model initialization starts
     reportProgress(LoadingStage.MODEL_INITIALIZATION_START, {
       message: 'Preparing model for inference',
@@ -357,19 +435,71 @@ function runMain(prompt: string, params: Record<string, string | number | boolea
   self.postMessage({ event: workerActions.RUN_COMPLETED });
 }
 
-self.onmessage = async (e) => {
-  switch (e.data.event) {
+self.onmessage = async (event: MessageEvent) => {
+  const { event: action, wasmModulePath, wasmPath, modelUrl, modelData, params, prompt, cancelable } = event.data;
+
+  switch (action) {
     case workerActions.LOAD:
-      // e.data.wasmModulePath: path/URL to the Emscripten JS glue (e.g., './main.js')
-      // e.data.wasmPath: path/URL to the actual .wasm file (e.g., './main.wasm')
-      // e.data.modelUrl: optional URL to a model file to auto-load
-      await initWasmModule(e.data.wasmModulePath, e.data.wasmPath, e.data.modelUrl);
+      // Initialize the Wasm module
+      await initWasmModule(wasmModulePath, wasmPath, modelUrl, modelData);
       break;
     case workerActions.LOAD_MODEL_DATA:
-      await loadModelData(e.data.modelData as ArrayBuffer);
+      // Load model data with cancelation support if specified
+      await loadModelData(modelData, cancelable);
       break;
     case workerActions.RUN_MAIN:
-      runMain(e.data.prompt as string, e.data.params as Record<string, string | number | boolean>);
+      // Generate text using the model (params and prompt from message data)
+      try {
+        // Build args for main
+        const argsArray = [
+          'main', 
+          '-m', modelPath, 
+          '-p', prompt,
+        ];
+
+        // Add all parameters from params object, if provided
+        if (params) {
+          if (params.n_predict !== undefined) argsArray.push('-n', String(params.n_predict));
+          if (params.ctx_size !== undefined) argsArray.push('--ctx-size', String(params.ctx_size));
+          if (params.batch_size !== undefined) argsArray.push('--batch-size', String(params.batch_size));
+          if (params.temp !== undefined) argsArray.push('--temp', String(params.temp));
+          if (params.n_gpu_layers !== undefined) argsArray.push('-ngl', String(params.n_gpu_layers));
+          if (params.top_k !== undefined) argsArray.push('--top-k', String(params.top_k));
+          if (params.top_p !== undefined) argsArray.push('--top-p', String(params.top_p));
+          if (params.no_display_prompt === true) argsArray.push('--no-display-prompt');
+          if (params.chatml === true) argsArray.push('--chatml');
+          // Add additional parameters as needed
+        }
+
+        // Call the main function with args
+        wasmModuleInstance.callMain(argsArray);
+        // Flush any remaining output
+        if (stdoutBuffer.length > 0) {
+          self.postMessage({
+            event: workerActions.WRITE_RESULT,
+            text: decoder.decode(new Uint8Array(stdoutBuffer)),
+          });
+          stdoutBuffer.length = 0;
+        }
+        
+        // Signal completion
+        self.postMessage({
+          event: workerActions.RUN_COMPLETED,
+        });
+      } catch (e) {
+        console.error('Error running model:', e);
+        self.postMessage({ 
+          event: 'ERROR', 
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
       break;
+    case workerActions.CANCEL_LOAD:
+      // Set cancellation flag and start cleanup process
+      console.log('Cancellation requested');
+      isCancellationRequested = true;
+      break;
+    default:
+      console.warn(`Unknown action: ${action}`);
   }
 }; 

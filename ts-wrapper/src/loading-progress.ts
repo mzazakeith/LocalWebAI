@@ -24,7 +24,10 @@ export enum LoadingStage {
   MODEL_READY = 'model_ready',
   
   // Error stages
-  ERROR = 'error'
+  ERROR = 'error',
+  
+  // Cancellation stage
+  CANCELLED = 'cancelled'
 }
 
 /**
@@ -71,6 +74,8 @@ export function getStageDescription(stage: LoadingStage): string {
       return 'Model ready for use';
     case LoadingStage.ERROR:
       return 'Error loading model';
+    case LoadingStage.CANCELLED:
+      return 'Model loading cancelled by user';
     default:
       return `Unknown stage: ${stage}`;
   }

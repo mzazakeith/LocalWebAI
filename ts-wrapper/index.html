@@ -318,7 +318,10 @@
                         <input type="file" id="modelFile" accept=".gguf">
                     </div>
                 </div>
-                <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
+                <div class="form-row">
+                    <button id="loadModelBtn" class="btn btn-primary">Load Model</button>
+                    <button id="cancelLoadBtn" class="btn" style="background-color: var(--error); color: white; display: none;">Cancel Loading</button>
+                </div>
                 
                 <!-- Progress Tracking -->
                 <div class="progress-container">
@@ -385,6 +388,7 @@
         const modelUrlInput = document.getElementById('modelUrl');
         const modelFileInput = document.getElementById('modelFile');
         const loadModelBtn = document.getElementById('loadModelBtn');
+        const cancelLoadBtn = document.getElementById('cancelLoadBtn');
         const loadingStage = document.getElementById('loadingStage');
         const modelProgressText = document.getElementById('modelProgressText');
         const modelProgressBar = document.getElementById('modelProgressBar');
@@ -404,6 +408,8 @@
         // --- End Configuration ---
 
         let llamaRunner;
+        let abortController = null;
+        
         try {
             llamaRunner = new LlamaRunner(WORKER_PATH, WASM_MODULE_PATH, WASM_PATH);
             console.log("LlamaRunner instantiated.");
@@ -421,6 +427,8 @@
             
             // Add specific class based on stage type
             if (stage === LoadingStage.ERROR) {
+                loadingStage.classList.add('error');
+            } else if (stage === LoadingStage.CANCELLED) {
                 loadingStage.classList.add('error');
             } else if (stage === LoadingStage.MODEL_READY) {
                 loadingStage.classList.add('complete');
@@ -546,6 +554,24 @@
             return JSON.stringify(value);
         }
 
+        
+        // Cancel button click handler
+        cancelLoadBtn.addEventListener('click', () => {
+            if (!llamaRunner) return;
+            
+            // Cancel the loading process
+            if (abortController) {
+                abortController.abort();
+            } else {
+                llamaRunner.cancelLoading();
+            }
+            
+            // Update UI
+            cancelLoadBtn.style.display = 'none';
+            loadModelBtn.disabled = false;
+            updateLoadingStageUI(LoadingStage.CANCELLED, 'Model loading cancelled by user');
+        });
+
         loadModelBtn.addEventListener('click', async () => {
             if (!llamaRunner) return;
             const modelUrl = modelUrlInput.value;
@@ -569,6 +595,10 @@
             resultText.textContent = '';
             metadataArea.classList.add('hidden'); // Hide metadata area when loading new model
             
+            // Create a new AbortController for this operation
+            abortController = new AbortController();
+            cancelLoadBtn.style.display = 'inline-flex'; // Show cancel button
+            
             // Initialize progress display
             updateLoadingStageUI(LoadingStage.PREPARING_MODEL_DATA, 'Starting model load process...');
             updateProgressBar(0, 1);
@@ -584,7 +614,7 @@
                     if (progressInfo.metadata && progressInfo.stage === LoadingStage.METADATA_PARSE_COMPLETE) {
                         displayModelMetadata(progressInfo.metadata);
                     }
-                });
+                }, abortController.signal);
                 
                 // Model loaded successfully
                 updateLoadingStageUI(LoadingStage.MODEL_READY, 'Model loaded successfully!');
@@ -599,10 +629,18 @@
                 console.log("Model loaded successfully.");
             } catch (error) {
                 console.error("Error loading model:", error);
-                updateLoadingStageUI(LoadingStage.ERROR, `Error loading model: ${error.message}`);
-                alert(`Error loading model: ${error.message}`);
+                
+                // Check if this was a user-initiated cancellation
+                if (error.name === 'AbortError') {
+                    updateLoadingStageUI(LoadingStage.CANCELLED, 'Model loading cancelled by user');
+                } else {
+                    updateLoadingStageUI(LoadingStage.ERROR, `Error loading model: ${error.message}`);
+                    alert(`Error loading model: ${error.message}`);
+                }
             } finally {
                 loadModelBtn.disabled = false;
+                cancelLoadBtn.style.display = 'none';
+                abortController = null;
             }
         });
 
