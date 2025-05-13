@@ -62,6 +62,11 @@ export class NodeLlamaRunner {
   private lastProgressInfo: ProgressInfo | null = null; // Track the last progress update
   private abortController: AbortController | null = null; // For tracking active load cancellation
 
+  // Promise to track Wasm module readiness in the worker
+  private wasmModuleReadyPromise: Promise<void>;
+  private resolveWasmModuleReady: (() => void) | null = null;
+  private rejectWasmModuleReady: ((reason?: any) => void) | null = null;
+
   /**
    * @param workerPath Absolute path to the compiled node-worker.ts (e.g., node-worker.js)
    * @param wasmNodeModulePath Absolute path to the Node.js-specific Emscripten JS glue file (e.g., from llama-cpp-wasm/dist/node/.../main.js)
@@ -72,6 +77,10 @@ export class NodeLlamaRunner {
     private wasmNodeModulePath: string,
     private wasmNodePath: string
   ) {
+    this.wasmModuleReadyPromise = new Promise<void>((resolve, reject) => {
+      this.resolveWasmModuleReady = resolve;
+      this.rejectWasmModuleReady = reject; // Store rejector for error cases during init
+    });
     this.initWorker();
   }
 
@@ -94,6 +103,10 @@ export class NodeLlamaRunner {
       this.worker.on('error', (error) => {
         console.error('[NodeLlamaRunner] Worker errored:', error);
         const workerError = new WasmError(`Worker thread encountered an error: ${error.message}`);
+        // If Wasm module initialization fails, reject the promise
+        if (this.rejectWasmModuleReady) {
+            this.rejectWasmModuleReady(workerError);
+        }
         this.handleWorkerError(workerError);
       });
 
@@ -106,6 +119,10 @@ export class NodeLlamaRunner {
         // Potentially notify the user or attempt restart if appropriate
         if (code !== 0) {
              const exitError = new WasmError(`Worker thread exited unexpectedly with code: ${code}`);
+             // If Wasm module initialization fails due to exit, reject the promise
+            if (this.rejectWasmModuleReady) {
+                this.rejectWasmModuleReady(exitError);
+            }
              this.handleWorkerError(exitError);
         }
       });
@@ -134,12 +151,18 @@ export class NodeLlamaRunner {
 
     switch (action) {
       case workerActions.INITIALIZED:
-        if (!this.isInitialized) {
-            this.isInitialized = true; // Wasm module is ready
+        // This message can come twice:
+        // 1. After Wasm module is initialized in the worker.
+        // 2. After model data is loaded into VFS in the worker.
+        if (!this.isInitialized) { // First INITIALIZED: Wasm module is ready
+            this.isInitialized = true;
             console.log('[NodeLlamaRunner] Worker initialized Wasm module.');
-            // If isLoadingModel is true here, it means we were waiting for init *before* loading model data
-        } else {
-            // If already initialized, this likely signals model VFS load completion
+            if (this.resolveWasmModuleReady) {
+                this.resolveWasmModuleReady(); // Resolve the promise
+                this.resolveWasmModuleReady = null;
+                this.rejectWasmModuleReady = null;
+            }
+        } else { // Second INITIALIZED (or subsequent if multiple models are loaded sequentially): Model VFS load complete
             this.isModelLoaded = true;
             this.isLoadingModel = false;
             console.log('[NodeLlamaRunner] Worker confirmed model loaded into VFS.');
@@ -291,7 +314,11 @@ export class NodeLlamaRunner {
     signal?: AbortSignal
   ): Promise<void> {
     if (!this.worker) {
-      throw new WasmError('Node worker is not initialized or has exited.');
+      // If worker construction failed or worker exited early, wasmModuleReadyPromise might be rejected
+      // Propagate that rejection.
+      await this.wasmModuleReadyPromise; // This will throw if worker init failed.
+      // If it didn't throw, but worker is null, it's an unexpected state.
+      throw new WasmError('Node worker is not available, but initialization promise did not reject.');
     }
     if (this.isLoadingModel) {
         throw new ModelInitializationError('Another model is already being loaded.');
@@ -310,6 +337,32 @@ export class NodeLlamaRunner {
 
     this.abortController = signal ? null : new AbortController();
     const abortSignal = signal || this.abortController!.signal;
+
+    // Wait for the Wasm module to be ready if it hasn't initialized yet.
+    // this.isInitialized is set when the first INITIALIZED message is received.
+    // this.wasmModuleReadyPromise is resolved at that point.
+    try {
+      if (!this.isInitialized) {
+        console.log('[NodeLlamaRunner] Waiting for Wasm module to initialize in worker...');
+        // Check abortSignal before awaiting indefinitely
+        if (abortSignal.aborted) {
+          throw new OperationCancelledError('Model loading aborted before Wasm initialization');
+        }
+        
+        const raceAbort = new Promise((_, rejectRace) => {
+          abortSignal.addEventListener('abort', () => {
+            rejectRace(new OperationCancelledError('Wasm initialization aborted'));
+          }, { once: true });
+        });
+
+        await Promise.race([this.wasmModuleReadyPromise, raceAbort]);
+        console.log('[NodeLlamaRunner] Wasm module is initialized. Proceeding to load model data.');
+      }
+    } catch (initError: any) {
+        this.isLoadingModel = false; // Ensure flag is reset
+        // Propagate the error (could be cancellation or actual Wasm init error)
+        throw initError; 
+    }
 
     const handleAbort = () => {
       if (this.isLoadingModel) {

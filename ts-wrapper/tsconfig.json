@@ -12,7 +12,6 @@
     "forceConsistentCasingInFileNames": true, // Disallow inconsistently-cased references to the same file
     "lib": ["ES2020", "DOM", "WebWorker"], // Include type definitions for browser, DOM and WebWorker
     "allowJs": true,                // Allow JavaScript files to be compiled
-    "types": ["node"],            // <-- Add this line to include Node.js types
     // "baseUrl": ".",                 // Base directory to resolve non-absolute module names.
     // "paths": {                      // Used to remap imports, if needed later
     //   "*": ["node_modules/*", "src/types/*"]

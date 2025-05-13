@@ -4,11 +4,12 @@
   "description": "TypeScript wrapper for llama.cpp Wasm",
   "main": "dist/src/llama-runner.js",
   "types": "dist/src/llama-runner.d.ts",
+  "type": "module",
   "exports": {
     ".": {
       "browser": "./dist/src/llama-runner.js",
       "node": "./dist/src/node-llama-runner.js",
-      "default": "./dist/src/llama-runner.js" 
+      "default": "./dist/src/llama-runner.js"
     },
     "./node": "./dist/src/node-llama-runner.js",
     "./browser": "./dist/src/llama-runner.js"
@@ -27,9 +28,10 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "typescript": "^5.0.0" 
+    "@types/node": "^22.15.17",
+    "typescript": "^5.0.0"
   },
   "files": [
     "dist/src"
   ]
-} 
+}

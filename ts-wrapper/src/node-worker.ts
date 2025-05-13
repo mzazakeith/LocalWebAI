@@ -187,6 +187,20 @@ async function initWasmModule(wasmNodeModulePath: string, wasmNodePath: string) 
     message: 'Initializing WebAssembly module for Node.js'
   });
 
+  // Polyfill for Emscripten code that might expect web worker globals
+  if (typeof globalThis.onmessage === 'undefined') {
+    (globalThis as any).onmessage = null; // Or a no-op function: () => {};
+    console.log('[NodeWorker] Polyfilled globalThis.onmessage');
+  }
+  if (typeof globalThis.postMessage === 'undefined') {
+    // Emscripten might also try to use self.postMessage for its own workers if pthreads are involved.
+    // We don't want it to conflict with parentPort, so a simple log or no-op might be best.
+    (globalThis as any).postMessage = (message: any) => {
+      console.warn('[NodeWorker] globalThis.postMessage polyfill called. This might indicate an unexpected Wasm behavior. Message:', message);
+    };
+    console.log('[NodeWorker] Polyfilled globalThis.postMessage');
+  }
+
   const emscriptenModuleConfig: Partial<EmscriptenModule> = {
     noInitialRun: true,
     preInit: [() => {
