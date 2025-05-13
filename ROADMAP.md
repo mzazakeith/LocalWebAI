@@ -29,6 +29,7 @@ This document outlines the planned features and development trajectory for the L
 *   **Goal**: Solidify the core library, expand model support, and improve basic performance.
 *   **Runtime & API**: 
     *   Refine `LlamaRunner` (browser) and implement `NodeJsLlamaCppRunner` (Node.js) APIs.
+    *   **[COMPLETED]** **Browser Wasm Runner**: Successfully migrated the browser-based `LlamaRunner` to use `wllama` ([https://github.com/ngxson/wllama](https://github.com/ngxson/wllama)) as its WebAssembly backend, leveraging its active maintenance and modern `llama.cpp` versions.
     *   **[COMPLETED]** Implemented comprehensive error handling and reporting.
     *   **[COMPLETED]** **Node.js Runtime**: Successfully implemented a Node.js runtime environment by integrating a local clone of `node-llama-cpp` ([https://github.com/withcatai/node-llama-cpp](https://github.com/withcatai/node-llama-cpp)). This provides access to mature native bindings for `llama.cpp`, including potential GPU support.
         *   **Metal GPU Troubleshooting (macOS)**: During Node.js runner development, Metal shader compilation errors were encountered with the default `node-llama-cpp` build. This was resolved by rebuilding `node-llama-cpp` with the `NODE_LLAMA_CPP_GPU=false` environment variable and ensuring the `NodeJsLlamaCppRunner` was instantiated with `gpu: false` to force CPU execution.
@@ -36,7 +37,7 @@ This document outlines the planned features and development trajectory for the L
 *   **Model Management**:
     *   **[COMPLETED]** **Robust Model Loading**: Implemented chunking for IndexedDB caching (supporting large models), granular progress reporting for all stages (download, VFS write, metadata parsing, initialization), cancellation support, and detailed metadata/provenance handling (parsing, validation, storage, display).
 *   **Performance**:
-    *   **[NEXT FOCUS]** **WASM SIMD**: Ensure SIMD optimizations are effectively utilized (present in current `llama-cpp-wasm` builds, verify and document).
+    *   **[COMPLETED]** **WASM SIMD**: SIMD optimizations are utilized via the `wllama` library for the browser runner.
     *   **[NEXT FOCUS]** **Basic WebGL Acceleration**: Investigate and implement WebGL-based acceleration for matrix operations as an enhancement layer (as per POC spec).
     *   **[NEXT FOCUS]** Performance benchmarking tools and documented metrics.
 *   **Developer Experience**:
@@ -69,7 +70,11 @@ This document outlines the planned features and development trajectory for the L
     *   **Node.js GPU Support**: Further investigate and document leveraging `node-llama-cpp`'s existing GPU support (CUDA, Vulkan, Metal where stable/desired) for the Node.js runner, beyond the initial CPU-focused bring-up.
     *   Automatic capability detection and fallback between WebGPU, WebGL, SIMD, and basic WASM (browser) and CPU/GPU (Node.js).
 *   **Browser Runner Strategy**:
-    *   **Investigate `node-llama-cpp` for Browser**: Explore the feasibility and benefits of adapting `node-llama-cpp`'s architecture or its direct `llama.cpp` bindings/approach for the browser Wasm runner. This could potentially unify the core runner logic further, provide more comprehensive `llama.cpp` feature parity, and simplify long-term maintenance.
+   *   **Investigate `node-llama-cpp` for Browser**: Explore the feasibility and 
+    benefits of adapting `node-llama-cpp`'s architecture or its direct `llama.cpp` 
+    bindings/approach for the browser Wasm runner. This could potentially unify the 
+    core runner logic further, provide more comprehensive `llama.cpp` feature parity, 
+    and simplify long-term maintenance.  **[COMPLETED]** **Wasm Backend Solidified**: The browser runner now utilizes `wllama` as its WebAssembly backend, providing a modern and actively maintained interface to `llama.cpp`.  
 
 ### Phase 3: Ecosystem & Framework Integrations
 
@@ -102,5 +107,6 @@ This project builds upon the fantastic open-source work of others. We are deeply
 *   **[llama.cpp](https://github.com/ggml-org/llama.cpp)**: For the core C/C++ inference engine.
 *   **[llama-cpp-wasm](https://github.com/tangledgroup/llama-cpp-wasm)**: For providing the WebAssembly build and JavaScript bindings that enabled our initial browser POC.
 *   **[node-llama-cpp](https://github.com/withcatai/node-llama-cpp)**: For the comprehensive Node.js bindings for `llama.cpp`, which significantly accelerated the development of our Node.js runtime and provides a rich set of features. Thank you for open-sourcing your work!
+*   **[wllama](https://github.com/ngxson/wllama)**: For their excellent WebAssembly bindings for `llama.cpp`, which now power our browser-based `LlamaRunner`. Their work provides a modern, actively maintained, and feature-rich interface to `llama.cpp` in the browser.
 
 This roadmap is a living document and will be updated as the project evolves and based on community feedback. 

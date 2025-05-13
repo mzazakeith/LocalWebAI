@@ -474,11 +474,19 @@
 
         // --- Configuration: Adjust these paths --- 
         // These paths are relative to where this index.html is served from.
-        // Assumes llama-cpp-wasm is a sibling directory to ts-wrapper,
-        // and we use the single-threaded build artifacts.
-        const WORKER_PATH = './dist/worker.js'; // Compiled from ts-wrapper/worker.ts
-        const WASM_MODULE_PATH = '../llama-cpp-wasm/dist/llama-mt/main.js'; // JS glue from llama-cpp-wasm (MULTI-THREADED)
-        const WASM_PATH = '../llama-cpp-wasm/dist/llama-mt/main.wasm';    // .wasm file from llama-cpp-wasm (MULTI-THREADED)
+        
+        // NEW: Configuration for wllama artifacts
+        const wllamaArtifactPaths = {
+            singleThreadWasm: '../wllama/esm/single-thread/wllama.wasm', // Path to wllama.wasm (single-thread)
+            // multiThreadWasm: '../wllama/esm/multi-thread/wllama.wasm', // Path to wllama-mt.wasm (multi-thread, enable for MT testing)
+        };
+
+        // Optional: Wllama configuration
+        const wllamaOptions = {
+            // Example: Suppress native C++ logs from wllama
+            // suppressNativeLog: true, 
+            // logger: console, // You can provide a custom logger
+        };
         // --- End Configuration ---
 
         let llamaRunner;
@@ -571,8 +579,9 @@
         }
         
         try {
-            llamaRunner = new LlamaRunner(WORKER_PATH, WASM_MODULE_PATH, WASM_PATH);
-            console.log("LlamaRunner instantiated.");
+            // UPDATED: LlamaRunner instantiation
+            llamaRunner = new LlamaRunner(wllamaArtifactPaths, wllamaOptions);
+            console.log("LlamaRunner (wllama-based) instantiated.");
         } catch (e) {
             console.error("Failed to instantiate LlamaRunner:", e);
             modelProgressText.textContent = "Error initializing runner: " + e.message;
@@ -892,9 +901,22 @@
 
             console.log("Starting text generation...");
             try {
+                 // Define default generation parameters
+                 const generationParams = {
+                    temp: 0.7,       // Temperature for sampling
+                    n_predict: 50,  // Max tokens to predict
+                    top_k: 40,       // Top-K sampling
+                    top_p: 0.9,      // Top-P (nucleus) sampling
+                    // Add other parameters here if needed, e.g.:
+                    // mirostat: 0,
+                    // mirostat_tau: 5.0,
+                    // penalty_repeat: 1.1,
+                    // grammar: '', // GBNF grammar string
+                 };
+
                  llamaRunner.generateText(
                     prompt,
-                    { temp: 0.7, n_predict: 150 },
+                    generationParams, // Pass the defined parameters
                     (token) => {
                         // Stream tokens
                         currentLine += token;

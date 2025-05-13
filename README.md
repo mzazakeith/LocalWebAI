@@ -10,7 +10,7 @@ This project is currently in **Phase 1: Foundation & Enhancement (Node.js integr
 
 We have successfully demonstrated the following capabilities:
 
-*   **In-Browser Inference**: Running `llama.cpp` compiled to WebAssembly (leveraging `llama-cpp-wasm` for the Wasm build) via a `LlamaRunner` in the `ts-wrapper`.
+*   **In-Browser Inference**: Running `llama.cpp` compiled to WebAssembly via a `LlamaRunner` in the `ts-wrapper`, now powered by the `wllama` library ([https://github.com/ngxson/wllama](https://github.com/ngxson/wllama)) for up-to-date `llama.cpp` features and active maintenance.
 *   **Node.js Inference**: Successfully integrated `node-llama-cpp` ([https://github.com/withcatai/node-llama-cpp](https://github.com/withcatai/node-llama-cpp)) to create a `NodeJsLlamaCppRunner`, enabling robust LLM execution in Node.js environments. This involved troubleshooting and resolving Metal GPU build issues on macOS to ensure stable CPU-based execution for initial testing.
 *   **TypeScript Wrappers**: The `ts-wrapper` provides developer-friendly APIs for both browser (`LlamaRunner`) and Node.js (`NodeJsLlamaCppRunner`) environments.
 *   **Model Loading**: Support for loading GGUF models from various sources.
@@ -26,8 +26,9 @@ We have successfully demonstrated the following capabilities:
 
 ## Project Structure
 
-*   `ts-wrapper/`: Contains the core TypeScript library (`LlamaRunner` for browser, `NodeJsLlamaCppRunner` for Node.js, `ModelCache`, `worker.ts`), a demo `index.html`, and its `package.json` for building the wrapper.
-*   `llama-cpp-wasm/`: A git submodule or separate checkout of the `llama-cpp-wasm` project, used for its WebAssembly build artifacts (`main.js`, `main.wasm`) for the browser runner.
+*   `ts-wrapper/`: Contains the core TypeScript library (`LlamaRunner` for browser, `NodeJsLlamaCppRunner` for Node.js, `ModelCache`), a demo `index.html`, and its `package.json` for building the wrapper.
+*   `wllama/`: A local clone of the `wllama` project ([https://github.com/ngxson/wllama](https://github.com/ngxson/wllama)), which provides the WebAssembly bindings and JavaScript interface to `llama.cpp` for the browser-based `LlamaRunner`.
+*   `llama-cpp-wasm/`: A git submodule or separate checkout of the `llama-cpp-wasm` project, which was used for the initial Proof of Concept browser Wasm build. It has now been superseded by `wllama` for the main browser runner.
 *   `node-llama-cpp/`: A local clone of the `node-llama-cpp` project, used for its native Node.js bindings.
 *   `emsdk/`: (If used directly) The Emscripten SDK, potentially used by `llama-cpp-wasm` for its builds.
 *   `models/`: A suggested directory for storing downloaded GGUF model files (not version-controlled by default).
@@ -46,8 +47,10 @@ We have successfully demonstrated the following capabilities:
      cd LocalWebAI
     ```
 
-2.  **Ensure `llama-cpp-wasm` Artifacts are Present**:
-    *   The POC relies on build artifacts (specifically `main.js` and `main.wasm`) from the `llama-cpp-wasm` project. Ensure the `llama-cpp-wasm/dist/llama-mt/` directory (for multi-threaded) or `llama-cpp-wasm/dist/llama-st/` (for single-threaded, though `mt` is currently configured in the demo) contains these files. If not, you may need to build `llama-cpp-wasm` first by following its own `build.sh` or `build-multi-thread.sh` scripts.
+2.  **Ensure `wllama` Artifacts are Present and Configured**:
+    *   The browser demo relies on build artifacts (specifically `.wasm` files and JavaScript modules) from the `wllama` project (see `wllama/` directory, which should be a local clone).
+    *   Ensure the `wllama` project is built (e.g., by running `npm install && npm run build` within the `wllama` directory).
+    *   The `LlamaRunner` in `ts-wrapper` will need to be configured with the correct paths to these `wllama` artifacts (e.g., `wllama/esm/single-thread/wllama.wasm`, `wllama/esm/multi-thread/wllama.wasm`). This is typically handled during `LlamaRunner` instantiation in the demo HTML/JS.
 
 3.  **Install Root Dependencies** (for the server):
     *   Navigate to the project root (`LocalWebAI/`).
@@ -79,13 +82,12 @@ We have successfully demonstrated the following capabilities:
 
 ## Next Steps & Future Vision
 
-The successful integration of `node-llama-cpp` for the Node.js runtime marks a significant milestone. Key next steps include:
+The successful integration of `node-llama-cpp` for the Node.js runtime and `wllama` for the browser runtime marks significant milestones. Key next steps include:
 
 *   Refining the unified API surface for both browser and Node.js runners.
-*   Verifying and optimizing **WASM SIMD** performance for the browser runner.
+*   Verifying and optimizing **WASM SIMD** performance for the browser runner (leveraging `wllama` capabilities).
 *   Investigating basic **WebGL acceleration** for the browser.
 *   Expanding `NodeJsLlamaCppRunner` capabilities by leveraging more features from `node-llama-cpp` (e.g., advanced generation parameters, embeddings).
-*   Exploring the potential of adapting `node-llama-cpp`'s architecture for the browser runner to unify approaches and enhance features.
 *   Adding comprehensive **unit/integration tests** and improving **documentation** for both environments.
 
 Future phases will focus on expanding model format support (ONNX, SafeTensors), adding higher-level task APIs (chat, embeddings, summarize), and creating integrations for popular JavaScript frameworks (React, Vue, Next.js, etc.).
@@ -97,8 +99,9 @@ For a detailed plan, please see the [**Project Roadmap (ROADMAP.md)**](./ROADMAP
 This project builds upon the fantastic open-source work of others. We are deeply grateful to the developers and communities behind these projects:
 
 *   **[llama.cpp](https://github.com/ggml-org/llama.cpp)**: For the core C/C++ inference engine that makes high-performance LLM execution possible on a wide range of hardware. Their work is foundational to this project.
-*   **[llama-cpp-wasm](https://github.com/tangledgroup/llama-cpp-wasm)**: For providing the WebAssembly build and JavaScript bindings for `llama.cpp`, which enabled the initial browser-based proof of concept for this library.
-*   **[node-llama-cpp](https://github.com/withcatai/node-llama-cpp)**: For their excellent Node.js bindings for `llama.cpp`. Their comprehensive library, active development, and clear documentation have been invaluable for implementing our Node.js runtime. Thank you for your significant contribution to the open-source AI ecosystem!
+*   **[wllama](https://github.com/ngxson/wllama)**: For their excellent WebAssembly bindings for `llama.cpp`. `wllama` now powers our browser-based `LlamaRunner`, providing a modern, actively maintained, and feature-rich interface to `llama.cpp` directly in the browser.
+*   **[node-llama-cpp](https://github.com/withcatai/node-llama-cpp)**: For their excellent Node.js bindings for `llama.cpp`. Their comprehensive library, active development, and clear documentation have been invaluable for implementing our Node.js runtime.
+*   **[llama-cpp-wasm](https://github.com/tangledgroup/llama-cpp-wasm)**: For providing the WebAssembly build and JavaScript bindings for `llama.cpp` that enabled the initial browser-based proof of concept for this library.
 
 Thank you for open-sourcing your work and enabling projects like this one!
 
