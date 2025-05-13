@@ -126,6 +126,13 @@ The integration will proceed in the following phases:
      - Accurate adaptation of progress, token, and error reporting.
      - Successful build and location of `node-llama-cpp` native addons.
      - Confirmation that `munmap` warnings and `exit(1)` issues are resolved.
+     - **GPU (Metal) Troubleshooting on macOS:**
+       - Encountered Metal shader compilation errors when `node-llama-cpp` was built with Metal support enabled by default.
+       - Initial attempts to disable Metal via `gpuLayers: 0` in `loadModel` parameters or by passing `CMAKE_ARGS='-DGGML_METAL=OFF'` or `NODE_LLAMA_CPP_CMAKE_ARGS_GGML_METAL=OFF` during the `node-llama-cpp` build were unsuccessful in preventing Metal initialization.
+       - **Resolution:**
+         - The `node-llama-cpp` native addon was successfully built for CPU-only by setting the environment variable `NODE_LLAMA_CPP_GPU=false` before running its build script (e.g., `NODE_LLAMA_CPP_GPU=false npm run dev:build`). This correctly disabled Metal during the CMake configuration.
+         - The `NodeJsLlamaCppRunner` was instantiated with `{ gpu: false }` in the test scripts (`nodellamacpp-load-test.ts` and `nodellamacpp-inference-test.ts`) to ensure the runner itself requests a CPU backend from `node-llama-cpp`.
+       - The model path issue (ENOENT) was temporarily worked around by copying the model to `/tmp/` and using an absolute path. This needs to be revisited for a more robust solution if relative paths from the project root are desired.
 
 ---
 
@@ -142,3 +149,32 @@ The integration will proceed in the following phases:
 
 ---
 This plan provides a structured approach to integrating `node-llama-cpp` as a local clone, aiming for a robust and feature-rich Node.js runtime for the `ts-wrapper`. 
+
+---
+
+## Future Enhancements
+
+- **Expand `GenerateTextParams`:** Augment the `GenerateTextParams` interface (in `llama-runner.ts` or a new Node-specific version) to include more parameters supported by `node-llama-cpp`, such as:
+    - `seed`
+    - `repeatPenalty` (with detailed structure: `lastN`, `penalty`, `frequencyPenalty`, `presencePenalty`, `penalizeNewLine`)
+    - `grammar` (as a string for GBNF)
+    - `stopSequences` (array of strings)
+    - `logitBias`
+    - Other relevant `llama.cpp` sampling parameters.
+- **Update `NodeJsLlamaCppRunner` Mapping:** Correspondingly update the parameter mapping logic in `NodeJsLlamaCppRunner.ts` to utilize these extended parameters when calling `node-llama-cpp` APIs.
+- **Configurable System Prompt:** Allow the system prompt for `LlamaChatSession` to be configurable, either during `NodeJsLlamaCppRunner` instantiation or via `loadModel`/`generateText` parameters.
+- **Configurable Context Size:** Make the `contextSize` for `LlamaContextOptions` configurable, potentially deriving it from model metadata or allowing user override during `loadModel`.
+- **Expose Other `node-llama-cpp` APIs:** Investigate and potentially expose other useful functionalities from `node-llama-cpp` through the `NodeJsLlamaCppRunner`, such as:
+    - Direct tokenization methods.
+    - Embedding generation.
+    - More advanced sequence and context management if required by specific use cases.
+- **Refine `TokenCallback` for `node-llama-cpp`:** While `onTextChunk` provides string outputs, `node-llama-cpp`'s `prompt` method also provides `onToken` which yields `Token[]`. Consider if providing raw token arrays via an alternative callback in `NodeJsLlamaCppRunner` would be beneficial for advanced scenarios, though this would deviate from the current `LlamaRunner`'s `TokenCallback` which expects a single string. 
+- **Consider More Complex Tests (Phase C extension):** If time permits within Phase C or as an immediate follow-up, add more complex tests for `NodeJsLlamaCppRunner`. This could include scenarios like:
+    - Context management (e.g., ensuring context is reset or preserved correctly between calls if applicable).
+    - Chat history injection and continuation.
+    - Testing various sampling parameters (temperature, top_k, top_p, repeat_penalty, etc.).
+    - Using GBNF grammar for constrained generation.
+    - Handling multiple concurrent requests if the runner is designed to support it. 
+
+
+    Note -> The current implmentation and inference shows that the bindings and api quality from node-llama-cpp are better  of what we have in llama-cpp-wasm We will consider using the same on the browser version later on.

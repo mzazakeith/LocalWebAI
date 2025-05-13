@@ -15,7 +15,7 @@ import {
     type GgufFileInfo,
     type LLamaChatPromptOptions,
     type LlamaChatSessionRepeatPenalty
-} from "@node-llama-cpp/index";
+} from "../../node-llama-cpp/src/index.js";
 import type { ModelSpecification } from './model-spec.js';
 import type { ProgressCallback, ProgressInfo } from './loading-progress.js';
 import { LoadingStage, getStageDescription } from './loading-progress.js';

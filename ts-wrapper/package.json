@@ -17,7 +17,9 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test:node-load": "node --loader ts-node/esm ./src/nodellamacpp-load-test.ts",
+    "test:node-inference": "node --loader ts-node/esm ./src/nodellamacpp-inference-test.ts"
   },
   "keywords": [
     "llama",
