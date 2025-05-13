@@ -15,6 +15,21 @@ import {
   classifyError
 } from './errors.js';
 
+// Import Wllama types (adjust path as necessary if wllama is not a sibling)
+import { Wllama, WllamaConfig, AssetsPathConfig, LoadModelConfig, ModelMetadata as WllamaModelMetadata, LoggerWithoutDebug, WllamaError, WllamaAbortError, SamplingConfig, ChatCompletionOptions, CompletionChunk } from '../../wllama/esm/index.js';
+
+// Import bufToText utility or define it locally
+// Assuming bufToText is re-exported or we define a simple version:
+const simpleBufToText = (buf: Uint8Array) => new TextDecoder().decode(buf);
+
+// Define a local interface compatible with wllama's DownloadOptions for progress and abort
+interface WllamaDownloadOptions {
+  progress_callback?: (loaded: number, total: number) => void;
+  abort_signal?: AbortSignal;
+  useCache?: boolean; // This option is often paired in wllama's loadModelFromUrl
+  // headers?: Record<string, string>; // Not currently used by LlamaRunner
+}
+
 // Define the types for callbacks
 export type TokenCallback = (token: string) => void;
 export type CompletionCallback = () => void;
@@ -22,29 +37,44 @@ export type CompletionCallback = () => void;
 // Define the structure for generation parameters, aligning with llama.cpp options
 export interface GenerateTextParams {
   n_predict?: number;       // Max tokens to predict. -1 for infinity, -2 for till context limit.
-  ctx_size?: number;        // Context size for the model.
-  batch_size?: number;      // Batch size for prompt processing.
+  // ctx_size?: number; // This will likely be set during wllama.loadModel via LoadModelConfig.n_ctx
+  // batch_size?: number; // This will likely be set during wllama.loadModel via LoadModelConfig.n_batch
   temp?: number;            // Temperature for sampling.
-  n_gpu_layers?: number;    // Number of layers to offload to GPU (if supported by Wasm build).
+  // n_gpu_layers?: number; // Likely not applicable for browser WASM
   top_k?: number;           // Top-K sampling.
   top_p?: number;           // Top-P (nucleus) sampling.
-  no_display_prompt?: boolean; // Whether to include the prompt in the output stream.
-  chatml?: boolean;         // Use ChatML prompt format.
-  // We can add more parameters here as needed, e.g., repeat_penalty, seed, etc.
+  // no_display_prompt?: boolean; // Will be handled during generation if wllama supports it or by filtering output
+  // chatml?: boolean; // Will be handled by prompt formatting or if wllama has a specific mode
+  // ---- New Wllama specific params that might be useful to expose ----
+  mirostat?: number;
+  mirostat_tau?: number;
+  penalty_last_n?: number;
+  penalty_repeat?: number;
+  penalty_freq?: number;
+  penalty_present?: number;
+  grammar?: string; // GBNF grammar
 }
 
-// Replicate actions from worker for type safety
-const workerActions = {
-  LOAD: 'LOAD',
-  INITIALIZED: 'INITIALIZED',
-  RUN_MAIN: 'RUN_MAIN',
-  WRITE_RESULT: 'WRITE_RESULT',
-  RUN_COMPLETED: 'RUN_COMPLETED',
-  LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
-  MODEL_METADATA: 'MODEL_METADATA', // Add the new action
-  PROGRESS_UPDATE: 'PROGRESS_UPDATE', // Add progress update action
-  CANCEL_LOAD: 'CANCEL_LOAD', // Add cancel action
-};
+// Configuration for Wllama artifact paths
+export interface WllamaArtifacts {
+  singleThreadWasm: string; // Path to wllama.wasm (single-thread)
+  multiThreadWasm?: string; // Path to wllama-mt.wasm (multi-thread)
+  // workerJs?: string; // Path to wllama.worker.js (if using multi-thread worker pattern)
+                        // wllama seems to handle its own worker loading if multiThreadWasm is given
+}
+
+// Replicate actions from worker for type safety - RETAIN FOR NOW, but likely to be removed or heavily changed
+// const workerActions = {
+//   LOAD: 'LOAD',
+//   INITIALIZED: 'INITIALIZED',
+//   RUN_MAIN: 'RUN_MAIN',
+//   WRITE_RESULT: 'WRITE_RESULT',
+//   RUN_COMPLETED: 'RUN_COMPLETED',
+//   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
+//   MODEL_METADATA: 'MODEL_METADATA',
+//   PROGRESS_UPDATE: 'PROGRESS_UPDATE',
+//   CANCEL_LOAD: 'CANCEL_LOAD',
+// };
 
 // GGUF version constraints for validation
 const MIN_SUPPORTED_GGUF_VERSION = 2;
@@ -54,6 +84,7 @@ const MAX_SUPPORTED_GGUF_VERSION = 3;
 const REQUIRED_METADATA_FIELDS = [
   // Critical fields that must be present for compatibility verification
   'ggufVersion'
+  // 'architecture' // wllama might provide this differently, to be checked in mapping
 ];
 
 // Optional but important fields (we'll warn if missing)
@@ -64,7 +95,8 @@ const IMPORTANT_METADATA_FIELDS = [
 ];
 
 export class LlamaRunner {
-  private worker: Worker | null = null;
+  // private worker: Worker | null = null; // REMOVED
+  private wllamaInstance: Wllama | null = null; // ADDED
   private modelCache: ModelCache;
   private isInitialized = false;
   private isLoadingModel = false;
@@ -79,167 +111,69 @@ export class LlamaRunner {
   private abortController: AbortController | null = null; // For tracking active abort controller
 
   /**
-   * @param workerPath Path to the compiled worker.ts (e.g., 'worker.js')
-   * @param wasmModulePath Path to the Emscripten JS glue file (e.g., from llama-cpp-wasm/dist/.../main.js)
-   * @param wasmPath Path to the .wasm file (e.g., from llama-cpp-wasm/dist/.../main.wasm)
+   * @param wllamaArtifactPaths Paths to the wllama WASM artifacts.
+   * @param wllamaOptions Optional configuration for Wllama.
    */
   constructor(
-    private workerPath: string,
-    private wasmModulePath: string,
-    private wasmPath: string
+    private wllamaArtifactPaths: WllamaArtifacts,
+    private wllamaOptions?: WllamaConfig
   ) {
     this.modelCache = new ModelCache();
-    this.initWorker();
+    // this.initWorker(); // REMOVED old initWorker
+    this.initWllama(); // ADDED
   }
 
-  private initWorker(): void {
-    this.worker = new Worker(this.workerPath, { type: 'module' });
+  // private initWorker(): void { // REMOVED old initWorker
+    // ... old worker initialization logic ...
+  // }
 
-    this.worker.onmessage = (event) => {
-      const { event: action, text, error, errorDetails, metadata, stage, ...progressDetails } = event.data;
-      switch (action) {
-        case workerActions.INITIALIZED:
-          this.isInitialized = true;
-          if (this.isLoadingModel && this.onModelLoadedCallback) {
-            this.onModelLoadedCallback();
-          }
-          this.isLoadingModel = false;
-          this.onModelLoadedCallback = null;
-          this.onModelLoadErrorCallback = null;
-          break;
-        case workerActions.WRITE_RESULT:
-          if (this.currentTokenCallback && typeof text === 'string') {
-            this.currentTokenCallback(text);
-          }
-          break;
-        case workerActions.RUN_COMPLETED:
-          if (this.currentCompletionCallback) {
-            this.currentCompletionCallback();
-          }
-          this.currentTokenCallback = null;
-          this.currentCompletionCallback = null;
-          break;
-        case workerActions.MODEL_METADATA:
-          // Handle the new metadata message
-          this.handleModelMetadata(metadata as ModelSpecification);
-          break;
-        case workerActions.PROGRESS_UPDATE:
-          // Handle detailed progress updates
-          if (stage && this.currentProgressCallback) {
-            const progressInfo: ProgressInfo = {
-              stage: stage as LoadingStage,
-              ...progressDetails
-            };
-            this.lastProgressInfo = progressInfo;
-            this.currentProgressCallback(progressInfo);
-          }
-          break;
-        // Handle potential errors from worker
-        case 'ERROR': // Assuming worker posts { event: 'ERROR', message: '...'}
-            console.error('Error from worker:', error);
-            
-            // Create a proper error instance based on errorDetails if available
-            let errorInstance: Error;
-            
-            if (errorDetails) {
-              // Create specific error type based on the name
-              switch (errorDetails.name) {
-                case 'GGUFParsingError':
-                  errorInstance = new GGUFParsingError(errorDetails.message, errorDetails.details);
-                  break;
-                case 'ModelCompatibilityError':
-                  errorInstance = new ModelCompatibilityError(
-                    errorDetails.message,
-                    errorDetails.actualVersion,
-                    errorDetails.minSupported,
-                    errorDetails.maxSupported
-                  );
-                  break;
-                case 'VFSError':
-                  errorInstance = new VFSError(errorDetails.message, errorDetails.path);
-                  break;
-                case 'WasmError':
-                  errorInstance = new WasmError(errorDetails.message);
-                  break;
-                case 'OperationCancelledError':
-                  errorInstance = new OperationCancelledError(errorDetails.message);
-                  break;
-                case 'ModelInitializationError':
-                  errorInstance = new ModelInitializationError(errorDetails.message);
-                  break;
-                default:
-                  // Generic LocalWebAIError for unknown types
-                  errorInstance = new LocalWebAIError(errorDetails.message || error);
-              }
-            } else {
-              // Fallback to the error message string
-              errorInstance = classifyError(error || 'Unknown worker error');
-            }
-            
-            // Report error through progress callback if available
-            if (this.currentProgressCallback) {
-              this.currentProgressCallback({
-                stage: LoadingStage.ERROR,
-                message: errorInstance.message,
-                error: errorInstance.message
-              });
-            }
-            
-            if (this.isLoadingModel && this.onModelLoadErrorCallback) {
-                this.onModelLoadErrorCallback(errorInstance);
-            }
-            this.isLoadingModel = false;
-            this.onModelLoadedCallback = null;
-            this.onModelLoadErrorCallback = null;
-            // Potentially notify other error listeners if any
-            break;
+  private initWllama(): void { // ADDED
+    try {
+      const paths: AssetsPathConfig = {
+        'single-thread/wllama.wasm': new URL(this.wllamaArtifactPaths.singleThreadWasm, window.location.href).href,
+      };
+      if (this.wllamaArtifactPaths.multiThreadWasm) {
+        paths['multi-thread/wllama.wasm'] = new URL(this.wllamaArtifactPaths.multiThreadWasm, window.location.href).href;
       }
-    };
 
-    this.worker.onerror = (event: ErrorEvent) => {
-      console.error('Error in LlamaRunner worker:', event);
-      // Log more details from the ErrorEvent
-      let detailedErrorMessage = 'Worker onerror';
-      if (event.message) {
-        detailedErrorMessage = event.message;
-      } else if (typeof event === 'string') {
-        detailedErrorMessage = event;
+      const config: WllamaConfig = {
+        logger: LoggerWithoutDebug, // Default to less verbose logging
+        suppressNativeLog: true,
+        ...(this.wllamaOptions || {}),
+      };
+
+      this.wllamaInstance = new Wllama(paths, config);
+      this.isInitialized = true; // Assume synchronous initialization of Wllama class itself is success
+      console.log("Wllama instance created successfully.");
+
+      // If there was an onModelLoadedCallback queued from a previous attempt (unlikely here, but good practice)
+      // This logic might shift depending on how loadModel handles pre-init loading.
+      // For now, Wllama constructor is synchronous.
+      if (this.isLoadingModel && this.onModelLoadedCallback) {
+        // This state seems more relevant after a model load attempt, not Wllama instantiation.
+        // For now, keeping isInitialized tied to Wllama instantiation.
       }
-      console.error(`Worker Error Details: Message: ${event.message}, Filename: ${event.filename}, Lineno: ${event.lineno}, Colno: ${event.colno}`);
 
-      // Create a specific error instance for worker errors
-      const error = new WasmError(`Worker error: ${detailedErrorMessage}`);
-
-      // Report error through progress callback if available
+    } catch (error) {
+      console.error('Error initializing Wllama:', error);
+      this.isInitialized = false;
+      // Report this critical initialization error
+      const wllamaError = error instanceof WllamaError ? error : new WasmError(`Wllama initialization failed: ${error instanceof Error ? error.message : String(error)}`);
+      
       if (this.currentProgressCallback) {
         this.currentProgressCallback({
           stage: LoadingStage.ERROR,
-          message: error.message,
-          error: error.message
+          message: wllamaError.message,
+          error: wllamaError.message
         });
       }
-
-      if (this.isLoadingModel && this.onModelLoadErrorCallback) {
-        this.onModelLoadErrorCallback(error);
-      }
-      this.isLoadingModel = false;
-      this.onModelLoadedCallback = null;
-      this.onModelLoadErrorCallback = null;
-    };
-
-    // Initial message to worker to load Wasm module
-    // The worker will then fetch the model if a modelUrl is also passed, or wait for model data.
-    this.worker.postMessage({
-      event: workerActions.LOAD,
-      wasmModulePath: new URL(this.wasmModulePath, window.location.href).href,
-      wasmPath: new URL(this.wasmPath, window.location.href).href,
-      // modelUrl: initialModelUrl, // Optionally load a default model URL on init
-    });
+      // This error should probably be propagated more forcefully, e.g., by throwing.
+      // For now, LlamaRunner will be in a non-functional state.
+      // Consider if the constructor should throw or if methods should check isInitialized.
+      throw wllamaError; // Propagate critical initialization error
+    }
   }
 
-  /**
-   * Reports progress to the callback with appropriate stage and details
-   */
   private reportProgress(info: Partial<ProgressInfo>): void {
     if (!this.currentProgressCallback) return;
     
@@ -265,7 +199,7 @@ export class LlamaRunner {
   private async handleModelMetadata(workerMetadata: ModelSpecification): Promise<void> {
     // Start with the existing metadata (which should have provenance)
     // Or initialize a new object if none exists yet
-    const mergedMetadata: ModelSpecification = { 
+    const mergedMetadata: ModelSpecification = {
         ...(this.currentModelMetadata || {}), // Keep existing fields (like provenance)
         ...workerMetadata // Overwrite with worker-parsed fields, worker data takes precedence for GGUF fields
     };
@@ -481,13 +415,18 @@ export class LlamaRunner {
 
     // Signal cancellation
     this.abortController.abort();
-    
-    // Notify the worker to cancel any operations in progress
-    if (this.worker) {
-      this.worker.postMessage({
-        event: workerActions.CANCEL_LOAD
-      });
-    }
+
+    // NEW: If wllamaInstance exists and has a way to cancel ongoing ops, call it.
+    // Wllama's loadModel and runCompletion take AbortSignal directly.
+    // This external abortController is for LlamaRunner's own management.
+    // Wllama will react to the signal passed to its methods.
+
+    // REMOVED: Old worker cancellation
+    // if (this.worker) {
+    //   this.worker.postMessage({
+    //     event: workerActions.CANCEL_LOAD
+    //   });
+    // }
 
     this.reportProgress({
       stage: LoadingStage.CANCELLED,
@@ -516,10 +455,11 @@ export class LlamaRunner {
     source: string | File,
     modelId?: string,
     progressCallback?: ProgressCallback,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    loadConfig?: Omit<LoadModelConfig, 'progress_callback'> // progress_callback will be handled internally
   ): Promise<void> {
-    if (!this.worker) {
-      throw new WasmError('Worker not initialized.');
+    if (!this.wllamaInstance || !this.isInitialized) {
+      throw new WasmError('LlamaRunner is not initialized or Wllama instance is not available.');
     }
     if (this.isLoadingModel) {
         throw new ModelInitializationError('Another model is already being loaded.');
@@ -535,31 +475,16 @@ export class LlamaRunner {
     // Set up abort handling
     const handleAbort = () => {
       if (this.isLoadingModel) {
-        console.log('Model loading aborted by user');
-        
-        // Notify the worker 
-        if (this.worker) {
-          this.worker.postMessage({ 
-            event: workerActions.CANCEL_LOAD 
-          });
-        }
-        
-        // Create a specific error type for cancellation
-        const abortError = new OperationCancelledError('Model loading aborted by user');
-        
-        // Reject the promise with the cancellation error
-        if (this.onModelLoadErrorCallback) {
-          this.onModelLoadErrorCallback(abortError);
-        }
-        
-        // Clean up if we have a modelId
-        if (this.currentModelId) {
-          // Best effort to remove any partial cache entries
-          this.modelCache.deleteModel(this.currentModelId).catch(err => {
-            console.warn('Error cleaning up cache after abort:', err);
-          });
-        }
-        
+        console.log('Model loading aborted by user (LlamaRunner)');
+
+        // REMOVED: Old worker cancellation
+        // if (this.worker) {
+        //   this.worker.postMessage({
+        //     event: workerActions.CANCEL_LOAD
+        //   });
+        // }
+
+        // The AbortSignal passed to wllama.loadModel will handle wllama's internal cancellation.
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
@@ -579,254 +504,182 @@ export class LlamaRunner {
       this.onModelLoadedCallback = resolve;
       this.onModelLoadErrorCallback = reject;
 
-      // If already aborted, reject immediately
       if (abortSignal.aborted) {
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
         this.onModelLoadErrorCallback = null;
-        reject(new OperationCancelledError('Model loading aborted by user'));
+        const abortError = new OperationCancelledError('Model loading aborted by user prior to start');
+        this.reportProgress({ stage: LoadingStage.CANCELLED, message: abortError.message, error: abortError.message });
+        reject(abortError);
         return;
       }
 
       const actualModelId = modelId || (typeof source === 'string' ? source : `${source.name}-${source.size}`);
-      this.currentModelId = actualModelId; // Store current model ID for metadata handling
-      this.currentModelMetadata = null; // Reset metadata for new model
-      
-      let modelData: ArrayBuffer | null = null;
-      let cachedModelInfo = null;
+      this.currentModelId = actualModelId;
+      this.currentModelMetadata = null;
 
-      // 1. Try fetching from cache
+      let modelDataFromCache: ArrayBuffer | null = null;
+      let cachedSpec: ModelSpecification | undefined;
+
       try {
-        // Report starting to load
         this.reportProgress({
           stage: LoadingStage.PREPARING_MODEL_DATA,
           message: 'Checking model cache'
         });
-        
-        cachedModelInfo = await this.modelCache.getModelWithSpecificationFromCache(actualModelId);
-        modelData = cachedModelInfo?.modelData || null;
-        
-        // If cache has metadata, store it immediately
-        if (cachedModelInfo?.specification) {
-          this.currentModelMetadata = cachedModelInfo.specification;
-          
-          // Report metadata available from cache
-          this.reportProgress({
-            stage: LoadingStage.METADATA_PARSE_COMPLETE,
-            message: 'Model metadata loaded from cache',
-            metadata: cachedModelInfo.specification
-          });
+        const cachedResult = await this.modelCache.getModelWithSpecificationFromCache(actualModelId);
+        if (cachedResult) {
+            modelDataFromCache = cachedResult.modelData;
+            cachedSpec = cachedResult.specification;
+            if (cachedSpec) {
+                this.currentModelMetadata = cachedSpec;
+                this.reportProgress({
+                    stage: LoadingStage.METADATA_PARSE_COMPLETE, // Or a new "METADATA_FROM_CACHE"
+                    message: 'Model metadata loaded from cache',
+                    metadata: cachedSpec
+                });
+            }
         }
       } catch (err) {
-        console.warn('Error retrieving from cache, will load from source:', err);
-        // Convert to specific error type but don't throw - just fall back to loading from source
         const cacheError = new CacheError(
           `Error retrieving from cache: ${err instanceof Error ? err.message : String(err)}`,
           actualModelId
         );
         console.warn(cacheError);
-        modelData = null;
+        modelDataFromCache = null;
       }
 
-      // Check for abort before proceeding
       if (abortSignal.aborted) {
         handleAbort();
         return;
       }
 
-      if (modelData) {
-        // Report model found in cache
-        this.reportProgress({
-          stage: LoadingStage.PREPARING_MODEL_DATA,
-          message: 'Model found in cache',
-          loaded: modelData.byteLength,
-          total: modelData.byteLength
-        });
-        
-        console.log(`Model ${actualModelId} found in cache. Loading from cache.`);
-        this.worker?.postMessage({
-          event: workerActions.LOAD_MODEL_DATA,
-          modelData: modelData,
-        });
-        // Note: The actual resolution of the promise happens when the worker confirms INITIALIZED
-        return;
-      }
-
-      // 2. If not cached, fetch/read the model
-      console.log(`Model ${actualModelId} not found in cache. Proceeding to load from source.`);
+      console.log(`Preparing to load model ${actualModelId} into Wllama.`);
       try {
-        if (typeof source === 'string') {
-          // Report downloading
+        let sourceInfo: { url?: string, fileName?: string, fileSize?: number } = {};
+
+        // Ensure wllamaInstance is available
+        if (!this.wllamaInstance) {
+          throw new WasmError('Wllama instance is not available for loading model.');
+        }
+
+        this.reportProgress({ stage: LoadingStage.MODEL_INITIALIZATION_START, message: 'Loading model with Wllama...' });
+
+        if (typeof source === 'string') { // Handle URL source
+          sourceInfo.url = source;
           this.reportProgress({
-            stage: LoadingStage.DOWNLOADING_FROM_SOURCE,
-            message: 'Downloading model from URL'
+            stage: LoadingStage.MODEL_FETCH_START,
+            message: 'Fetching model from URL via Wllama'
           });
-          
-          // Pass the abort signal to fetch
-          const response = await fetch(source, { signal: abortSignal });
-          if (!response.ok) {
-            throw new NetworkError(
-              `Failed to download model: ${response.statusText}`,
-              response.status,
-              source
-            );
-          }
-          
-          if (!response.body) {
-            throw new NetworkError('Response body is null', undefined, source);
-          }
 
-          const contentLength = Number(response.headers.get('Content-Length') || '0');
-          const reader = response.body.getReader();
-          const chunks: Uint8Array[] = [];
-          let receivedLength = 0;
+          const downloadAndLoadConfig: LoadModelConfig & WllamaDownloadOptions = {
+            ...(loadConfig || {}),
+            progress_callback: (loaded: number, total: number) => {
+              this.reportProgress({
+                stage: LoadingStage.MODEL_FETCH_PROGRESS,
+                loaded,
+                total,
+                message: `Wllama downloading: ${total > 0 ? Math.round((loaded / total) * 100) : 0}%`
+              });
+            },
+            // Pass AbortSignal for download if wllama supports it in DownloadOptions (as abort_signal)
+            // Based on wllama.d.ts, DownloadOptions takes `abort_signal`
+            abort_signal: abortSignal // Pass the signal here
+          };
 
-          while (true) {
-            // Check for abort before reading
-            if (abortSignal.aborted) {
-              handleAbort();
-              return;
-            }
+          await this.wllamaInstance.loadModelFromUrl(source, downloadAndLoadConfig);
+          // fileSize might be known after download, wllama doesn't explicitly return it here.
+          // It will be part of metadata if GGUF contains it.
 
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            receivedLength += value.length;
-            
-            // Report download progress
+        } else { // Handle File or cached ArrayBuffer source
+          let modelBlob: Blob;
+          if (modelDataFromCache) { // Data from LlamaRunner's cache
             this.reportProgress({
-              stage: LoadingStage.DOWNLOADING_FROM_SOURCE,
-              loaded: receivedLength,
-              total: contentLength,
-              message: `Downloading model: ${contentLength > 0 ? Math.round((receivedLength / contentLength) * 100) : 0}%`
+              stage: LoadingStage.PREPARING_MODEL_DATA,
+              message: 'Using cached model data for Wllama',
+              loaded: modelDataFromCache.byteLength,
+              total: modelDataFromCache.byteLength
+            });
+            modelBlob = new Blob([modelDataFromCache], { type: 'application/octet-stream' });
+            sourceInfo.fileName = cachedSpec?.fileName || 'cached_model.gguf';
+            sourceInfo.fileSize = modelDataFromCache.byteLength;
+            sourceInfo.url = cachedSpec?.sourceURL;
+          } else { // Source is a File object
+            this.reportProgress({
+              stage: LoadingStage.READING_FROM_FILE,
+              message: 'Reading model from file for Wllama'
+            });
+            // For File objects, we don't need to read it into ArrayBuffer ourselves if wllama.loadModel takes Blob.
+            // wllama.loadModel expects Blob[] or Model. So a File (which is a Blob) is fine in an array.
+            modelBlob = source as File; 
+            sourceInfo.fileName = (source as File).name;
+            sourceInfo.fileSize = (source as File).size;
+            
+            // Report file read complete (conceptual, as wllama takes the blob directly)
+            this.reportProgress({
+                stage: LoadingStage.PREPARING_MODEL_DATA,
+                loaded: sourceInfo.fileSize,
+                total: sourceInfo.fileSize,
+                message: 'File prepared for Wllama.'
             });
           }
 
-          // Check for abort before processing chunks
           if (abortSignal.aborted) {
             handleAbort();
             return;
           }
-
-          modelData = new Uint8Array(receivedLength).buffer;
-          const tempUint8Array = new Uint8Array(modelData);
-          let position = 0;
-          for (const chunk of chunks) {
-            tempUint8Array.set(chunk, position);
-            position += chunk.length;
-          }
-          modelData = tempUint8Array.buffer;
-
-        } else {
-          // Handle File object
-          // Report reading from file
-          this.reportProgress({
-            stage: LoadingStage.READING_FROM_FILE,
-            message: 'Reading model from file'
-          });
           
-          modelData = await new Promise<ArrayBuffer>((resolveFile, rejectFile) => {
-            const reader = new FileReader();
-            reader.onload = (e) => resolveFile(e.target?.result as ArrayBuffer);
-            reader.onerror = (e) => {
-              rejectFile(new FileError(
-                reader.error?.message || 'File reading error',
-                source.name
-              ));
-            };
-            reader.onprogress = (e) => {
-              if (e.lengthComputable) {
-                // Report file reading progress
-                this.reportProgress({
-                  stage: LoadingStage.READING_FROM_FILE,
-                  loaded: e.loaded,
-                  total: e.total,
-                  message: `Reading model file: ${Math.round((e.loaded / e.total) * 100)}%`
-                });
-              }
-            };
-            
-            // Handle abort event for FileReader
-            const abortHandler = () => {
-              reader.abort();
-              rejectFile(new OperationCancelledError('Model loading aborted by user'));
-            };
-            abortSignal.addEventListener('abort', abortHandler, { once: true });
-            
-            reader.readAsArrayBuffer(source);
-          });
+          // For loadModel(Blob[]), progress is not directly applicable for the load itself.
+          // The LoadModelConfig doesn't take a progress_callback here.
+          await this.wllamaInstance.loadModel([modelBlob], loadConfig || {});
         }
 
-        // Check for abort before sending to worker
         if (abortSignal.aborted) {
           handleAbort();
           return;
         }
 
-        if (modelData) {
-          // Report preparing model data
-          this.reportProgress({
-            stage: LoadingStage.PREPARING_MODEL_DATA,
-            message: 'Preparing model data for virtual filesystem',
-            loaded: modelData.byteLength,
-            total: modelData.byteLength
-          });
-          
-          // Initialize a basic specification with provenance data
-          // The complete specification will be updated from worker-parsed metadata
-          const initialSpec: ModelSpecification = {
-            downloadDate: new Date().toISOString(),
-            fileName: typeof source !== 'string' ? source.name : undefined,
-            fileSize: modelData.byteLength,
-            sourceURL: typeof source === 'string' ? source : undefined
-          };
-          
-          // *** Assign initial spec (with provenance) to currentModelMetadata ***
-          // This ensures it's available for merging when worker returns GGUF data
-          this.currentModelMetadata = initialSpec; 
+        // --- Metadata Handling ---
+        const wllamaInternalMeta = this.wllamaInstance.getModelMetadata();
+        if (wllamaInternalMeta) {
+          this.currentModelMetadata = this.mapWllamaMetaToModelSpec(wllamaInternalMeta, sourceInfo);
 
-          // Pass modelFileName and modelContentType if available (from File object)
-          const modelFileName = typeof source !== 'string' ? source.name : undefined;
-          const modelContentType = typeof source !== 'string' ? source.type : undefined;
-          
-          try {
-            // Store with initial specification - will be updated later with parsed data
-            await this.modelCache.cacheModel(actualModelId, modelData, initialSpec, modelFileName, modelContentType);
-
-            // Check for abort before sending to worker
-            if (abortSignal.aborted) {
-              handleAbort();
-              return;
-            }
-            
-            // Include a cancelable flag with the model data
-            this.worker?.postMessage({
-              event: workerActions.LOAD_MODEL_DATA,
-              modelData: modelData, // Send the original buffer
-              cancelable: true // Indicate this operation can be cancelled
-            }, [modelData]); // Transfer buffer
-
-          } catch (err) {
-            // Log cache error but continue loading
-            console.warn(new CacheError(
-              `Failed to cache model: ${err instanceof Error ? err.message : String(err)}`,
-              actualModelId
-            ));
-            
-            // If caching failed, still send the data to the worker
-            this.worker?.postMessage({
-              event: workerActions.LOAD_MODEL_DATA,
-              modelData: modelData, // Send the original buffer
-              cancelable: true
-            }, [modelData]); // Transfer buffer
+          const validation = this.validateModelMetadata(this.currentModelMetadata);
+          if (validation.error) {
+            const errorInstance = validation.errorInstance || new ModelCompatibilityError(validation.error);
+            this.reportProgress({ stage: LoadingStage.ERROR, message: errorInstance.message, error: errorInstance.message, metadata: this.currentModelMetadata });
+            throw errorInstance;
           }
-          
-          // Clear reference - buffer is transferred to worker
-          modelData = null;
-          
+          if (validation.warnings.length > 0) {
+            validation.warnings.forEach(w => console.warn("Metadata warning:", w));
+          }
+
+          this.reportProgress({ stage: LoadingStage.METADATA_PARSE_COMPLETE, metadata: this.currentModelMetadata, message: "Model metadata processed via Wllama." });
+
+          // Cache the model if it was loaded from a File and not from LlamaRunner's cache initially
+          if (source instanceof File && !modelDataFromCache) {
+            try {
+                // We need ArrayBuffer to cache in ModelCache. Read the file again or use the blob.
+                const fileBufferForCache = await (source as File).arrayBuffer();
+                await this.modelCache.cacheModel(actualModelId, fileBufferForCache, this.currentModelMetadata);
+                this.reportProgress({ stage: LoadingStage.MODEL_FETCH_COMPLETE, message: "Model (from file) cached successfully."});
+            } catch(cacheErr) {
+                console.warn(new CacheError(`Failed to cache model ${actualModelId} from file: ${cacheErr instanceof Error ? cacheErr.message : String(cacheErr)}`));
+                this.reportProgress({ stage: LoadingStage.MODEL_FETCH_COMPLETE, message: "Model loaded, caching (from file) failed (non-critical)."});
+            }
+          }
         } else {
-            throw new FileError('Model data could not be retrieved');
+          this.reportProgress({ stage: LoadingStage.ERROR, message: 'Wllama loaded model but getModelMetadata() returned null/undefined.' });
+          throw new ModelInitializationError('Wllama loaded model but getModelMetadata() returned null/undefined.');
         }
+
+        this.isLoadingModel = false;
+        this.onModelLoadedCallback = null;
+        this.onModelLoadErrorCallback = null;
+        this.currentProgressCallback = null;
+
+        this.reportProgress({ stage: LoadingStage.MODEL_READY, metadata: this.currentModelMetadata, message: 'Model ready via Wllama.' });
+        resolve();
+
       } catch (err) {
         // Don't treat AbortError as an unexpected error
         if (err instanceof DOMException && err.name === 'AbortError') {
@@ -871,48 +724,209 @@ export class LlamaRunner {
    * @param params Optional parameters for text generation.
    * @param tokenCallback Callback for each generated token string.
    * @param completionCallback Callback for when generation is fully complete.
+   * @param abortSignal Optional AbortSignal for this specific generation call
    * @throws ModelInitializationError if the model is not initialized
    */
-  public generateText(
+  public async generateText(
     prompt: string,
     params: GenerateTextParams = {},
     tokenCallback: TokenCallback,
-    completionCallback: CompletionCallback
-  ): void {
-    if (!this.worker || !this.isInitialized) {
-      throw new ModelInitializationError('LlamaRunner is not initialized or model not loaded.');
+    completionCallback: CompletionCallback,
+    abortSignal?: AbortSignal
+  ): Promise<void> {
+    if (!this.wllamaInstance || !this.isInitialized || !this.currentModelMetadata) {
+      const error = new ModelInitializationError('LlamaRunner is not initialized, Wllama instance is not available, or no model is loaded.');
+      // Immediately call completion callback with error indication if possible, or throw
+      // For now, we'll throw, and the caller should catch.
+      // Consider how to report this error to the completionCallback or a new errorCallback for generateText.
+      this.currentCompletionCallback = null; // Clear completion as it won't be normally reached
+      this.currentTokenCallback = null;
+      throw error;
     }
     if (this.currentTokenCallback || this.currentCompletionCallback) {
-        console.warn('Text generation already in progress. New request will be ignored or queued (not implemented yet).');
-        // For POC, we might just throw an error or ignore
-        throw new ModelInitializationError("Text generation already in progress.");
+      const error = new ModelInitializationError("Text generation already in progress.");
+      // Similar to above, decide on error reporting. Throwing for now.
+      throw error;
     }
 
     this.currentTokenCallback = tokenCallback;
     this.currentCompletionCallback = completionCallback;
 
-    this.worker.postMessage({
-      event: workerActions.RUN_MAIN,
-      prompt: prompt,
-      params: params,
-    });
-  }
+    // 1. Create SamplingConfig
+    const samplingConfig: SamplingConfig = {
+      temp: params.temp,
+      top_k: params.top_k,
+      top_p: params.top_p,
+      mirostat: params.mirostat,
+      mirostat_tau: params.mirostat_tau,
+      penalty_last_n: params.penalty_last_n,
+      penalty_repeat: params.penalty_repeat,
+      penalty_freq: params.penalty_freq,
+      penalty_present: params.penalty_present,
+      grammar: params.grammar
+      // Other params like dynatemp_range, n_prev, n_probs, min_p, typical_p, logit_bias can be added if exposed
+    };
 
-  /**
-   * Terminates the worker. The LlamaRunner instance should not be used after this.
-   */
-  public terminate(): void {
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-      this.isInitialized = false;
-      this.isLoadingModel = false;
-      // Clear callbacks
-      this.onModelLoadedCallback = null;
-      this.onModelLoadErrorCallback = null;
-      this.currentProgressCallback = null;
+    // 2. Create ChatCompletionOptions
+    const chatOptions: ChatCompletionOptions & { stream: true } = { // Explicitly type stream as true
+      stream: true,
+      nPredict: params.n_predict, // Max tokens to predict
+      sampling: samplingConfig,
+      abortSignal: abortSignal, // Pass the AbortSignal for this generation
+      // onNewToken: This will be handled by iterating the async iterable
+      // stopTokens: Needs mapping if GenerateTextParams includes it
+      // useCache: Could be a new param in GenerateTextParams if prompt caching is desired
+    };
+
+    try {
+      if (!this.wllamaInstance) { // Should be caught by initial check, but good for type safety
+        throw new ModelInitializationError('Wllama instance became null unexpectedly.');
+      }
+
+      const completionStream = await this.wllamaInstance.createCompletion(prompt, chatOptions);
+
+      for await (const chunk of completionStream) {
+        if (abortSignal?.aborted) { // Check for abort during streaming
+          console.log('Text generation aborted during streaming.');
+          throw new WllamaAbortError(); // WllamaAbortError or OperationCancelledError
+        }
+        if (this.currentTokenCallback) {
+          // piece is Uint8Array. tokenCallback expects string.
+          this.currentTokenCallback(simpleBufToText(chunk.piece));
+        }
+      }
+
+      // Generation completed successfully (finished stream or stopped by nPredict)
+      if (this.currentCompletionCallback) {
+        this.currentCompletionCallback();
+      }
+
+    } catch (error) {
+      console.error('Error during Wllama text generation:', error);
+      let finalError: LocalWebAIError;
+      if (error instanceof WllamaAbortError || (error instanceof DOMException && error.name === 'AbortError')) {
+        finalError = new OperationCancelledError('Text generation cancelled.');
+      } else if (error instanceof WllamaError) {
+        // Map WllamaError to a more generic ModelInitializationError or a new InferenceError
+        finalError = new ModelInitializationError(`Wllama inference error: ${error.message} (type: ${error.type})`);
+      } else if (error instanceof LocalWebAIError) {
+        finalError = error;
+      } else {
+        finalError = new ModelInitializationError(`Unexpected error during text generation: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      
+      // If a completionCallback exists, we should call it, perhaps with an error marker or let the throw propagate.
+      // For now, letting the error propagate to the caller of generateText.
+      // The UI/caller will need a try/catch around generateText.
+      if (this.currentCompletionCallback) {
+        // Indicate error to completion callback? Or rely on throw.
+        // For now, let's assume the throw is sufficient and the caller handles it.
+        // If not, the completionCallback might need an optional error argument.
+         this.currentCompletionCallback(); // Call it to signify the end, even if errored.
+      }
+      throw finalError; // Propagate the classified error
+    } finally {
+      // Clear callbacks once generation is finished or errored
       this.currentTokenCallback = null;
       this.currentCompletionCallback = null;
     }
   }
+
+  /**
+   * Terminates the Wllama instance and cleans up resources.
+   */
+  public terminate(): void {
+    // if (this.worker) { // REMOVED
+    //   this.worker.terminate();
+    //   this.worker = null;
+    // }
+    if (this.wllamaInstance) {
+      try {
+        this.wllamaInstance.exit(); // Assuming wllama has an exit method
+        console.log("Wllama instance exited.");
+      } catch (e) {
+        console.error("Error during wllamaInstance.exit():", e);
+      }
+      this.wllamaInstance = null;
+    }
+    // ... existing code ...
+  }
+
+  // +++ ADDED: Helper method to map Wllama metadata to ModelSpecification +++
+  private mapWllamaMetaToModelSpec(wllamaMeta: WllamaModelMetadata, sourceInfo: { url?: string, fileName?: string, fileSize?: number }): ModelSpecification {
+    const spec: ModelSpecification = {
+        // Provenance from sourceInfo
+        sourceURL: sourceInfo.url,
+        fileName: sourceInfo.fileName,
+        fileSize: sourceInfo.fileSize,
+        downloadDate: new Date().toISOString(),
+
+        // From wllamaMeta.hparams
+        vocabSize: wllamaMeta.hparams?.nVocab,
+        contextLength: wllamaMeta.hparams?.nCtxTrain,
+        embeddingLength: wllamaMeta.hparams?.nEmbd,
+        layerCount: wllamaMeta.hparams?.nLayer,
+
+        // From wllamaMeta.meta (Record<string, string>)
+        architecture: wllamaMeta.meta?.['general.architecture'],
+        modelName: wllamaMeta.meta?.['general.name'],
+        ggufVersion: wllamaMeta.meta?.['general.version'] ? parseInt(wllamaMeta.meta['general.version'], 10) :
+                       (wllamaMeta.meta?.['gguf.version'] ? parseInt(wllamaMeta.meta['gguf.version'], 10) : undefined),
+        quantization: wllamaMeta.meta?.['general.file_type'], // Keep this simple for now
+        headCount: wllamaMeta.meta?.['llama.attention.head_count'] ? parseInt(wllamaMeta.meta['llama.attention.head_count'], 10) : undefined,
+        headCountKv: wllamaMeta.meta?.['llama.attention.head_count_kv'] ? parseInt(wllamaMeta.meta['llama.attention.head_count_kv'], 10) : undefined,
+        ropeFrequencyBase: wllamaMeta.meta?.['llama.rope.freq_base'] ? parseFloat(wllamaMeta.meta['llama.rope.freq_base']) : undefined,
+        ropeFrequencyScale: wllamaMeta.meta?.['llama.rope.scale_linear'] ? parseFloat(wllamaMeta.meta['llama.rope.scale_linear']) : undefined,
+        creator: wllamaMeta.meta?.['general.author'],
+        license: wllamaMeta.meta?.['general.license'],
+    };
+
+    // Add all other string meta values from wllamaMeta.meta
+    if (wllamaMeta.meta) {
+        for (const key in wllamaMeta.meta) {
+            const camelKey = keyToCamelCase(key);
+            // Avoid overwriting common fields already mapped or if camelKey is not a valid spec key yet
+            if (!spec.hasOwnProperty(camelKey) || spec[camelKey] === undefined) { 
+                 const valueStr = wllamaMeta.meta[key];
+                 const numVal = parseFloat(valueStr);
+                 if (!isNaN(numVal) && String(numVal) === valueStr) {
+                    spec[camelKey] = numVal;
+                 } else if (valueStr.toLowerCase() === 'true') {
+                    spec[camelKey] = true;
+                 } else if (valueStr.toLowerCase() === 'false') {
+                    spec[camelKey] = false;
+                 } else {
+                    spec[camelKey] = valueStr;
+                 }
+            }
+        }
+    }
+
+    // Refinement for ggufVersion if it was not found with common keys
+    if (spec.ggufVersion === undefined && wllamaMeta.meta) {
+        const versionKey = Object.keys(wllamaMeta.meta).find(k => k.toLowerCase().includes('gguf') && k.toLowerCase().includes('version'));
+        if (versionKey && wllamaMeta.meta[versionKey]) {
+            const parsedVersion = parseInt(wllamaMeta.meta[versionKey], 10);
+            if (!isNaN(parsedVersion)) {
+                spec.ggufVersion = parsedVersion;
+            }
+        }
+    }
+    
+    // Attempt to get a more specific quantization string if general.file_type is too generic (e.g., "all F32")
+    // This is still a simplification.
+    if (wllamaMeta.meta && (spec.quantization === undefined || spec.quantization.toLowerCase().includes('f32') || spec.quantization.toLowerCase().includes('f16') && !spec.quantization.toLowerCase().includes('q'))) {
+        const quantKey = Object.keys(wllamaMeta.meta).find(k => k.endsWith('.quantization_type') && !k.startsWith('general.'));
+        if (quantKey && wllamaMeta.meta[quantKey]) {
+            spec.quantization = wllamaMeta.meta[quantKey];
+        }
+    }
+
+    return spec;
+  }
+}
+
+// Helper function (can be moved outside or to a utils file)
+function keyToCamelCase(key: string): string {
+    return key.replace(/[^a-zA-Z0-9]+(.)/g, (m, chr) => chr.toUpperCase());
 } 
