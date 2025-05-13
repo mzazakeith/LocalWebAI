@@ -63,19 +63,6 @@ export interface WllamaArtifacts {
                         // wllama seems to handle its own worker loading if multiThreadWasm is given
 }
 
-// Replicate actions from worker for type safety - RETAIN FOR NOW, but likely to be removed or heavily changed
-// const workerActions = {
-//   LOAD: 'LOAD',
-//   INITIALIZED: 'INITIALIZED',
-//   RUN_MAIN: 'RUN_MAIN',
-//   WRITE_RESULT: 'WRITE_RESULT',
-//   RUN_COMPLETED: 'RUN_COMPLETED',
-//   LOAD_MODEL_DATA: 'LOAD_MODEL_DATA',
-//   MODEL_METADATA: 'MODEL_METADATA',
-//   PROGRESS_UPDATE: 'PROGRESS_UPDATE',
-//   CANCEL_LOAD: 'CANCEL_LOAD',
-// };
-
 // GGUF version constraints for validation
 const MIN_SUPPORTED_GGUF_VERSION = 2;
 const MAX_SUPPORTED_GGUF_VERSION = 3;
