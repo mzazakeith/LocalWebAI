@@ -1,27 +1,29 @@
 {
   "compilerOptions": {
-    "target": "ES2020",            // Target modern JavaScript features
+    "target": "ES2022",            // Target modern JavaScript features
     "module": "ESNext",             // Use ES modules
     "moduleResolution": "node",   // How modules get resolved
     "declaration": true,            // Generate .d.ts files
     "outDir": "./dist",             // Output directory for compiled files
-    "rootDir": "./src",                // Specify the root directory of input files
+    "rootDir": "../",                // Specify the root directory of input files
     "strict": true,                 // Enable all strict type-checking options
     "esModuleInterop": true,        // Enables emit interoperability between CommonJS and ES Modules
     "skipLibCheck": true,           // Skip type checking of all declaration files (*.d.ts)
     "forceConsistentCasingInFileNames": true, // Disallow inconsistently-cased references to the same file
-    "lib": ["ES2020", "DOM", "WebWorker"], // Include type definitions for browser, DOM and WebWorker
+    "lib": ["ES2022", "DOM", "WebWorker"], // Include type definitions for browser, DOM and WebWorker
     "allowJs": true,                // Allow JavaScript files to be compiled
-    // "baseUrl": ".",                 // Base directory to resolve non-absolute module names.
-    // "paths": {                      // Used to remap imports, if needed later
-    //   "*": ["node_modules/*", "src/types/*"]
-    // }
+    "baseUrl": "../",                 // Base directory to resolve non-absolute module names.
+    "paths": {                      // Used to remap imports
+      "@node-llama-cpp/*": ["node-llama-cpp/src/*"] 
+    }
   },
   "include": [
-    "./src/**/*.ts"                        // Glob pattern to include all .ts files in the current directory
+    "./src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
+    "**/node_modules/*", // Ensure node_modules in subdirectories are also excluded
+    "./dist",   // Exclude own output directory
     "**/*.spec.ts"
   ]
 } 
