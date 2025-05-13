@@ -27,7 +27,23 @@ export enum LoadingStage {
   ERROR = 'error',
   
   // Cancellation stage
-  CANCELLED = 'cancelled'
+  CANCELLED = 'cancelled',
+
+  // New stages
+  MODEL_CACHE_CHECK_COMPLETE = "model_cache_check_complete",
+  MODEL_FETCH_START = "model_fetch_start",
+  MODEL_FETCH_PROGRESS = "model_fetch_progress",
+  MODEL_FETCH_COMPLETE = "model_fetch_complete",
+  MODEL_DECOMPRESSION_START = "model_decompression_start",
+  MODEL_DECOMPRESSION_PROGRESS = "model_decompression_progress",
+  MODEL_DECOMPRESSION_COMPLETE = "model_decompression_complete",
+  METADATA_PARSE_PROGRESS = "metadata_parse_progress",
+  EMBIND_MODULE_LOAD_START = "embind_module_load_start",
+  EMBIND_MODULE_LOAD_PROGRESS = "embind_module_load_progress",
+  EMBIND_MODULE_LOAD_COMPLETE = "embind_module_load_complete",
+  MODEL_INITIALIZATION_PROGRESS = "model_initialization_progress",
+  MODEL_INITIALIZATION_COMPLETE = "model_initialization_complete",
+  IDLE = "idle"
 }
 
 /**
@@ -98,6 +114,34 @@ export function getStageDescription(stage: LoadingStage, errorType?: string): st
       return 'Error loading model';
     case LoadingStage.CANCELLED:
       return 'Model loading cancelled by user';
+    case LoadingStage.MODEL_CACHE_CHECK_COMPLETE:
+      return 'Model cache check complete';
+    case LoadingStage.MODEL_FETCH_START:
+      return 'Starting to fetch model';
+    case LoadingStage.MODEL_FETCH_PROGRESS:
+      return 'Fetching model progress';
+    case LoadingStage.MODEL_FETCH_COMPLETE:
+      return 'Model fetch complete';
+    case LoadingStage.MODEL_DECOMPRESSION_START:
+      return 'Starting model decompression';
+    case LoadingStage.MODEL_DECOMPRESSION_PROGRESS:
+      return 'Model decompression progress';
+    case LoadingStage.MODEL_DECOMPRESSION_COMPLETE:
+      return 'Model decompression complete';
+    case LoadingStage.METADATA_PARSE_PROGRESS:
+      return 'Parsing model metadata progress';
+    case LoadingStage.EMBIND_MODULE_LOAD_START:
+      return 'Starting to load embind module';
+    case LoadingStage.EMBIND_MODULE_LOAD_PROGRESS:
+      return 'Loading embind module progress';
+    case LoadingStage.EMBIND_MODULE_LOAD_COMPLETE:
+      return 'Loaded embind module';
+    case LoadingStage.MODEL_INITIALIZATION_PROGRESS:
+      return 'Model initialization progress';
+    case LoadingStage.MODEL_INITIALIZATION_COMPLETE:
+      return 'Model initialization complete';
+    case LoadingStage.IDLE:
+      return 'Runner is idle';
     default:
       return `Unknown stage: ${stage}`;
   }
