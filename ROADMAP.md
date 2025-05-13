@@ -24,14 +24,15 @@ This document outlines the planned features and development trajectory for the L
     *   Functional browser-based demo (`ts-wrapper/index.html`).
     *   HTTP server setup with COOP/COEP headers for `SharedArrayBuffer`.
 
-### Phase 1: Foundation & Enhancement (In Progress)
+### Phase 1: Foundation & Enhancement (Largely Completed)
 
 *   **Goal**: Solidify the core library, expand model support, and improve basic performance.
 *   **Runtime & API**: 
-    *   Refine `LlamaRunner` API based on POC learnings.
+    *   Refine `LlamaRunner` (browser) and implement `NodeJsLlamaCppRunner` (Node.js) APIs.
     *   **[COMPLETED]** Implemented comprehensive error handling and reporting.
-    *   **[NEXT FOCUS]** **Node.js Runtime**: Create a parallel runtime environment for Node.js using `worker_threads` and native Wasm bindings (if beneficial over Emscripten's Node output).
-    *   **[NEXT FOCUS]** Unified API surface for both browser and Node.js environments.
+    *   **[COMPLETED]** **Node.js Runtime**: Successfully implemented a Node.js runtime environment by integrating a local clone of `node-llama-cpp` ([https://github.com/withcatai/node-llama-cpp](https://github.com/withcatai/node-llama-cpp)). This provides access to mature native bindings for `llama.cpp`, including potential GPU support.
+        *   **Metal GPU Troubleshooting (macOS)**: During Node.js runner development, Metal shader compilation errors were encountered with the default `node-llama-cpp` build. This was resolved by rebuilding `node-llama-cpp` with the `NODE_LLAMA_CPP_GPU=false` environment variable and ensuring the `NodeJsLlamaCppRunner` was instantiated with `gpu: false` to force CPU execution.
+    *   **[NEXT FOCUS]** Unified API surface for both browser and Node.js environments (ongoing refinement).
 *   **Model Management**:
     *   **[COMPLETED]** **Robust Model Loading**: Implemented chunking for IndexedDB caching (supporting large models), granular progress reporting for all stages (download, VFS write, metadata parsing, initialization), cancellation support, and detailed metadata/provenance handling (parsing, validation, storage, display).
 *   **Performance**:
@@ -39,19 +40,25 @@ This document outlines the planned features and development trajectory for the L
     *   **[NEXT FOCUS]** **Basic WebGL Acceleration**: Investigate and implement WebGL-based acceleration for matrix operations as an enhancement layer (as per POC spec).
     *   **[NEXT FOCUS]** Performance benchmarking tools and documented metrics.
 *   **Developer Experience**:
-    *   **[NEXT FOCUS]** Comprehensive unit and integration tests for `ts-wrapper`.
-    *   **[NEXT FOCUS]** Clearer documentation for setup, usage, and available parameters.
+    *   **[COMPLETED]** Basic test scripts for `NodeJsLlamaCppRunner` (`nodellamacpp-load-test.ts`, `nodellamacpp-inference-test.ts`).
+    *   **[NEXT FOCUS]** Comprehensive unit and integration tests for `ts-wrapper` (both browser and Node.js runners).
+    *   **[NEXT FOCUS]** Clearer documentation for setup, usage, and available parameters for both runners.
 
-### Phase 2: Multi-Format Support & Task Abstractions
+### Phase 2: Multi-Format Support & Task Abstractions (Node.js Runner Enhancements here too)
 
 *   **Goal**: Broaden model compatibility and provide higher-level APIs for common tasks.
+*   **Node.js Runner Enhancements (Leveraging `node-llama-cpp` capabilities)**:
+    *   **Expand `GenerateTextParams`**: Augment parameters for `NodeJsLlamaCppRunner` to include more options supported by `node-llama-cpp` (e.g., `seed`, `repeatPenalty` structure, `grammar` string, `stopSequences`, `logitBias`).
+    *   **Configurable Options**: Allow configuration of system prompt, context size, and other `LlamaContextOptions`/`LlamaChatSessionOptions` via `NodeJsLlamaCppRunner`.
+    *   **Expose More APIs**: Investigate exposing other `node-llama-cpp` features like direct tokenization, embedding generation, and advanced context management through `NodeJsLlamaCppRunner`.
+    *   **Advanced Testing**: Implement more complex tests for the Node.js runner, covering context management, chat history, varied sampling parameters, GBNF grammar usage, and potentially concurrent operations.
 *   **Model Formats**:
     *   **ONNX Runtime**: Integrate ONNX model support, likely using `onnxruntime-web` for browsers and `onnxruntime-node` for Node.js.
         *   Adapter pattern for adding new model formats with minimal core changes.
     *   **SafeTensors**: Support for loading models and weights in SafeTensors format.
 *   **Task-Specific Abstractions**: 
-    *   High-level APIs for common AI tasks:
-        *   `generateText()` (already in POC, refine)
+    *   High-level APIs for common AI tasks (initially for browser, then for Node.js where applicable):
+        *   `generateText()` (refine for both)
         *   `chat()` (for conversational AI, handling chat history and templates)
         *   `embed()` (for generating text embeddings)
         *   Potentially: `summarize()`, `classify()`.
@@ -59,7 +66,10 @@ This document outlines the planned features and development trajectory for the L
     *   Prompt templating and management features.
 *   **Hardware Acceleration**:
     *   **WebGPU Acceleration**: Implement WebGPU support for cutting-edge performance in supporting browsers.
-    *   Automatic capability detection and fallback between WebGPU, WebGL, SIMD, and basic WASM.
+    *   **Node.js GPU Support**: Further investigate and document leveraging `node-llama-cpp`'s existing GPU support (CUDA, Vulkan, Metal where stable/desired) for the Node.js runner, beyond the initial CPU-focused bring-up.
+    *   Automatic capability detection and fallback between WebGPU, WebGL, SIMD, and basic WASM (browser) and CPU/GPU (Node.js).
+*   **Browser Runner Strategy**:
+    *   **Investigate `node-llama-cpp` for Browser**: Explore the feasibility and benefits of adapting `node-llama-cpp`'s architecture or its direct `llama.cpp` bindings/approach for the browser Wasm runner. This could potentially unify the core runner logic further, provide more comprehensive `llama.cpp` feature parity, and simplify long-term maintenance.
 
 ### Phase 3: Ecosystem & Framework Integrations
 
@@ -84,5 +94,13 @@ This document outlines the planned features and development trajectory for the L
 *   **Performance Telemetry**: Tools and methods for developers to understand performance characteristics on different devices/environments.
 *   **Security**: Model integrity checks, sandboxed execution considerations, privacy by design.
 *   **Licensing**: Clear guidance on model licenses and library usage.
+
+## Acknowledgements
+
+This project builds upon the fantastic open-source work of others. We are deeply grateful to the developers and communities behind these projects:
+
+*   **[llama.cpp](https://github.com/ggml-org/llama.cpp)**: For the core C/C++ inference engine.
+*   **[llama-cpp-wasm](https://github.com/tangledgroup/llama-cpp-wasm)**: For providing the WebAssembly build and JavaScript bindings that enabled our initial browser POC.
+*   **[node-llama-cpp](https://github.com/withcatai/node-llama-cpp)**: For the comprehensive Node.js bindings for `llama.cpp`, which significantly accelerated the development of our Node.js runtime and provides a rich set of features. Thank you for open-sourcing your work!
 
 This roadmap is a living document and will be updated as the project evolves and based on community feedback. 

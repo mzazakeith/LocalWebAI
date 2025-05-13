@@ -2,18 +2,19 @@
 
 This project aims to create a powerful TypeScript library that enables developers to run Large Language Models (LLMs) directly in web browsers and Node.js environments. The core value is to provide a privacy-preserving, offline-capable, and low-latency solution for AI inference without relying on external API calls.
 
-This project is currently in **Phase 1: Foundation & Enhancement** after POC was achieved .
+This project is currently in **Phase 1: Foundation & Enhancement (Node.js integration largely complete, Browser work ongoing)**.
 
  <!-- [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/mzazakeith/LocalWebAI) -->
 
-## Current Status: Phase 1 In Progress
+## Current Status
 
 We have successfully demonstrated the following capabilities:
 
-*   **In-Browser Inference**: Running `llama.cpp` compiled to WebAssembly (leveraging `llama-cpp-wasm` for the Wasm build).
-*   **TypeScript Wrapper**: A `ts-wrapper` provides a developer-friendly API (`LlamaRunner`) to interact with the Wasm module.
-*   **Model Loading**: Support for loading GGUF models from a URL or a user-provided File object.
-*   **Robust Caching**: Models are cached in IndexedDB using chunking, supporting large models and providing faster subsequent loads.
+*   **In-Browser Inference**: Running `llama.cpp` compiled to WebAssembly (leveraging `llama-cpp-wasm` for the Wasm build) via a `LlamaRunner` in the `ts-wrapper`.
+*   **Node.js Inference**: Successfully integrated `node-llama-cpp` ([https://github.com/withcatai/node-llama-cpp](https://github.com/withcatai/node-llama-cpp)) to create a `NodeJsLlamaCppRunner`, enabling robust LLM execution in Node.js environments. This involved troubleshooting and resolving Metal GPU build issues on macOS to ensure stable CPU-based execution for initial testing.
+*   **TypeScript Wrappers**: The `ts-wrapper` provides developer-friendly APIs for both browser (`LlamaRunner`) and Node.js (`NodeJsLlamaCppRunner`) environments.
+*   **Model Loading**: Support for loading GGUF models from various sources.
+*   **Robust Caching (Browser)**: Models are cached in IndexedDB using chunking, supporting large models and providing faster subsequent loads.
 *   **Granular Progress**: Detailed progress reporting for all loading stages (download, VFS write, metadata parsing, initialization).
 *   **Metadata & Provenance**: Parsing, validation, and display of GGUF model metadata, including provenance information (source URL, download date, file details).
 *   **Error Handling**: Specific and user-friendly error reporting for various issues (network, file, format, compatibility, Wasm).
@@ -21,12 +22,13 @@ We have successfully demonstrated the following capabilities:
 *   **Streaming Output**: Token-by-token text generation streamed to the UI.
 *   **Web Worker**: Inference runs in a separate Web Worker to maintain UI responsiveness.
 *   **Demo**: A functional `index.html` within the `ts-wrapper` directory showcases these features.
-*   **Server Setup**: Includes an Express.js server (`server.js`) at the project root, configured with necessary COOP/COEP headers for `SharedArrayBuffer` support, enabling multi-threaded Wasm execution.
+*   **Server Setup**: Includes an Express.js server (`server.js`) at the project root, configured with necessary COOP/COEP headers for `SharedArrayBuffer` support (relevant for multi-threaded browser Wasm).
 
 ## Project Structure
 
-*   `ts-wrapper/`: Contains the core TypeScript library (`LlamaRunner`, `ModelCache`, `worker.ts`), a demo `index.html`, and its `package.json` for building the wrapper.
-*   `llama-cpp-wasm/`: A git submodule or separate checkout of the `llama-cpp-wasm` project, used for its WebAssembly build artifacts (`main.js`, `main.wasm`).
+*   `ts-wrapper/`: Contains the core TypeScript library (`LlamaRunner` for browser, `NodeJsLlamaCppRunner` for Node.js, `ModelCache`, `worker.ts`), a demo `index.html`, and its `package.json` for building the wrapper.
+*   `llama-cpp-wasm/`: A git submodule or separate checkout of the `llama-cpp-wasm` project, used for its WebAssembly build artifacts (`main.js`, `main.wasm`) for the browser runner.
+*   `node-llama-cpp/`: A local clone of the `node-llama-cpp` project, used for its native Node.js bindings.
 *   `emsdk/`: (If used directly) The Emscripten SDK, potentially used by `llama-cpp-wasm` for its builds.
 *   `models/`: A suggested directory for storing downloaded GGUF model files (not version-controlled by default).
 *   `server.js`: Node.js Express server at the root to serve the project with appropriate headers.
@@ -70,15 +72,21 @@ We have successfully demonstrated the following capabilities:
     *   Enter a prompt and click "Generate Text".
     *   Check the browser's developer console for logs and any errors.
 
+8.  **Test Node.js Runner (from `ts-wrapper` directory)**:
+    *   Ensure `node-llama-cpp` has been built for CPU (e.g., `cd ../node-llama-cpp && NODE_LLAMA_CPP_GPU=false npm run dev:build && cd ../ts-wrapper`).
+    *   Run the load test: `npm run test:node-load`
+    *   Run the inference test: `npm run test:node-inference` (uses `/tmp/phi-2.Q4_K_M.gguf` by default, adjust path or copy model if needed).
+
 ## Next Steps & Future Vision
 
-The recently completed enhancements to model loading, caching, and metadata handling have solidified the foundation. Key next steps from Phase 1 of our roadmap include:
+The successful integration of `node-llama-cpp` for the Node.js runtime marks a significant milestone. Key next steps include:
 
-*   Developing a **Node.js runtime** for the library.
-*   Verifying and optimizing **WASM SIMD** performance.
-*   Investigating basic **WebGL acceleration**.
-*   Adding comprehensive **unit/integration tests** and improving **documentation**.
-*   Creating a unified API surface for both browser and Node.js environments.
+*   Refining the unified API surface for both browser and Node.js runners.
+*   Verifying and optimizing **WASM SIMD** performance for the browser runner.
+*   Investigating basic **WebGL acceleration** for the browser.
+*   Expanding `NodeJsLlamaCppRunner` capabilities by leveraging more features from `node-llama-cpp` (e.g., advanced generation parameters, embeddings).
+*   Exploring the potential of adapting `node-llama-cpp`'s architecture for the browser runner to unify approaches and enhance features.
+*   Adding comprehensive **unit/integration tests** and improving **documentation** for both environments.
 
 Future phases will focus on expanding model format support (ONNX, SafeTensors), adding higher-level task APIs (chat, embeddings, summarize), and creating integrations for popular JavaScript frameworks (React, Vue, Next.js, etc.).
 
@@ -90,6 +98,7 @@ This project builds upon the fantastic open-source work of others. We are deeply
 
 *   **[llama.cpp](https://github.com/ggml-org/llama.cpp)**: For the core C/C++ inference engine that makes high-performance LLM execution possible on a wide range of hardware. Their work is foundational to this project.
 *   **[llama-cpp-wasm](https://github.com/tangledgroup/llama-cpp-wasm)**: For providing the WebAssembly build and JavaScript bindings for `llama.cpp`, which enabled the initial browser-based proof of concept for this library.
+*   **[node-llama-cpp](https://github.com/withcatai/node-llama-cpp)**: For their excellent Node.js bindings for `llama.cpp`. Their comprehensive library, active development, and clear documentation have been invaluable for implementing our Node.js runtime. Thank you for your significant contribution to the open-source AI ecosystem!
 
 Thank you for open-sourcing your work and enabling projects like this one!
 
