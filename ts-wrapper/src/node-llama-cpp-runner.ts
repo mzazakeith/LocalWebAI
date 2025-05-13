@@ -31,9 +31,11 @@ import type { TokenCallback, CompletionCallback, GenerateTextParams } from './ll
 // Define NodeModelLoadParams based on LlamaModelOptions and ts-wrapper needs
 export interface NodeModelLoadParams {
   modelPath: string; // Main argument for loadModel, but also here for consistency if passed in options object
-  gpuLayers?: number;
-  // Add other LlamaModelOptions as needed for ts-wrapper abstraction
-  // Example: vocabOnly, useMmap, useMlock, etc.
+  gpuLayers?: LlamaModelOptions["gpuLayers"]; // Use the type from LlamaModelOptions
+  vocabOnly?: LlamaModelOptions["vocabOnly"];
+  useMmap?: LlamaModelOptions["useMmap"];
+  useMlock?: LlamaModelOptions["useMlock"];
+  checkTensors?: LlamaModelOptions["checkTensors"];
   // logLevel is handled by LlamaOptions passed to the constructor for getLlama
 }
 
@@ -129,7 +131,11 @@ export class NodeJsLlamaCppRunner {
             const absoluteModelPath = path.resolve(modelPath);
             const modelOptions: LlamaModelOptions = {
                 modelPath: absoluteModelPath,
-                gpuLayers: loadParams?.gpuLayers
+                gpuLayers: loadParams?.gpuLayers,
+                vocabOnly: loadParams?.vocabOnly,
+                useMmap: loadParams?.useMmap,
+                useMlock: loadParams?.useMlock,
+                checkTensors: loadParams?.checkTensors
             };
             
             this.logInfo('LlamaModelOptions prepared:', modelOptions);
