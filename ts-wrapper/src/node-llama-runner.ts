@@ -181,12 +181,12 @@ export class NodeLlamaRunner {
         break;
         
       case workerActions.RUN_COMPLETED:
-        if (this.currentCompletionCallback) {
-          this.currentCompletionCallback();
-        }
-        this.currentTokenCallback = null;
-        this.currentCompletionCallback = null;
         console.log('[NodeLlamaRunner] Worker signaled run completion.');
+        if (data.stderr && data.stderr.trim().length > 0) {
+          console.warn(`[NodeLlamaRunner] Worker stderr output:\n${data.stderr.trim()}`);
+        }
+        this.currentCompletionCallback?.(); // Call without arguments
+        this.resetCallbacks(); // Call the reset method
         break;
         
       case workerActions.MODEL_METADATA:
@@ -512,5 +512,10 @@ export class NodeLlamaRunner {
       this.lastProgressInfo = null;
       this.abortController = null;
     }
+  }
+
+  private resetCallbacks(): void {
+    this.currentTokenCallback = null;
+    this.currentCompletionCallback = null;
   }
 } 

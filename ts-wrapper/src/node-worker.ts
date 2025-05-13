@@ -58,6 +58,7 @@ const headerReadSize = 1024 * 1024; // 1MB header read size
 
 const decoder = new TextDecoder('utf-8');
 const stdoutBuffer: number[] = [];
+const stderrBuffer: number[] = []; // Buffer for stderr
 
 // Helper function to safely post messages to the parent port
 function postMessageToParent(message: any, transferList?: ReadonlyArray<TransferListItem>) {
@@ -100,9 +101,9 @@ const stdout = (c: number) => {
 };
 
 const stderr = (c: number) => {
-  // For now, just log stderr to console
-  // Consider sending critical stderr messages to parent
-  process.stderr.write(String.fromCharCode(c));
+  stderrBuffer.push(c);
+  // Optionally, still print to worker's stderr for live debugging if desired
+  // process.stderr.write(String.fromCharCode(c));
 };
 
 let isCancellationRequested = false;
@@ -505,6 +506,9 @@ function runMain(prompt: string, params: Record<string, any>) {
     return;
   }
 
+  // Clear previous stderr buffer
+  stderrBuffer.length = 0;
+
   try {
     const args: string[] = [
       // Default llama.cpp args for inference
@@ -518,7 +522,6 @@ function runMain(prompt: string, params: Record<string, any>) {
       "--top-k", (params.top_k || 40).toString(),
       "--top-p", (params.top_p || 0.9).toString(),
       "--simple-io", // Ensures output is plain text tokens
-      "--log-disable" // Reduce verbose logging from llama.cpp to stdout
     ];
 
     if (params.chatml) {
@@ -540,13 +543,13 @@ function runMain(prompt: string, params: Record<string, any>) {
         console.warn('[NodeWorker] no_display_prompt: true is set, but standard llama.cpp main might still display prompt with simple-io.');
     }
 
-    // Threading: Use os.cpus().length for Node.js environment
     // The Emscripten flags -s USE_PTHREADS=1 and -s PTHREAD_POOL_SIZE must be active in the build.
     // The llama.cpp CMakeLists.txt usually handles -pthread for native builds.
     // For Emscripten, this enables pthreads. Llama.cpp itself will use these if compiled with thread support.
-    const threadCount = (os.cpus() || []).length > 1 ? (os.cpus() || []).length : 2; // Default to 2 if os.cpus() is weird
-    args.push("--threads", threadCount.toString());
-    console.log(`[NodeWorker] Using --threads ${threadCount}`);
+    // const threadCount = (os.cpus() || []).length > 1 ? (os.cpus() || []).length : 2; // Default to 2 if os.cpus() is weird
+    // args.push("--threads", threadCount.toString());
+    // console.log(`[NodeWorker] Using --threads ${threadCount}`);
+    console.log('[NodeWorker] Explicitly NOT passing --threads argument for single-threaded Node.js build.');
 
     // Add other parameters as needed from GenerateTextParams
     if (params.n_gpu_layers !== undefined && params.n_gpu_layers > 0) {
@@ -559,18 +562,20 @@ function runMain(prompt: string, params: Record<string, any>) {
     console.log('[NodeWorker] Calling wasmModuleInstance.callMain with args:', args);
     wasmModuleInstance.callMain(args);
 
-  } catch (e) {
-    const error = e instanceof Error ? e : new ModelInitializationError('Error running model inference');
-    console.error('[NodeWorker] Error executing callMain:', error);
-    reportError(error);
-  } finally {
     // Ensure any remaining buffered output is sent after callMain completes or errors
     if (stdoutBuffer.length > 0) {
       const text = decoder.decode(new Uint8Array(stdoutBuffer));
       stdoutBuffer.length = 0;
       postMessageToParent({ event: workerActions.WRITE_RESULT, text });
     }
-    postMessageToParent({ event: workerActions.RUN_COMPLETED });
+    const finalStderr = decoder.decode(new Uint8Array(stderrBuffer));
+    stderrBuffer.length = 0;
+    postMessageToParent({ event: workerActions.RUN_COMPLETED, stderr: finalStderr });
+
+  } catch (e) {
+    const error = e instanceof Error ? e : new ModelInitializationError('Error running model inference');
+    console.error('[NodeWorker] Error executing callMain:', error);
+    reportError(error);
   }
 }
 
