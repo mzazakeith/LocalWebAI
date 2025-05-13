@@ -248,11 +248,17 @@ export function classifyError(error: any): LocalWebAIError {
   // GGUF parsing errors (structural issues with the file format)
   if (message.includes('GGUF') && 
      (message.includes('parsing') || 
-      message.includes('invalid') || 
-      message.includes('corrupt') ||
-      message.includes('header') ||
-      message.includes('buffer overflow'))) {
+      message.includes('invalid format') || 
+      message.includes('corrupted'))) {
     return new GGUFParsingError(message.replace(/^VFS error: /, ''));
+  }
+  
+  // Errors related to data processing within Wasm, like memory allocation from bad data
+  if (message.includes('Invalid typed array length') || 
+      (error.name === 'RangeError' && message.toLowerCase().includes('size'))) { // Broader RangeError for size issues
+    // This often indicates the WASM module tried to process invalid GGUF data
+    // leading to an attempt to allocate memory or create an array with an invalid size.
+    return new GGUFParsingError(`Failed to process model data: ${message}`);
   }
   
   // VFS errors related to model files - may need to be re-classified

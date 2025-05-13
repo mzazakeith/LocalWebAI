@@ -186,7 +186,7 @@ export class LlamaRunner {
   private async handleModelMetadata(workerMetadata: ModelSpecification): Promise<void> {
     // Start with the existing metadata (which should have provenance)
     // Or initialize a new object if none exists yet
-    const mergedMetadata: ModelSpecification = {
+    const mergedMetadata: ModelSpecification = { 
         ...(this.currentModelMetadata || {}), // Keep existing fields (like provenance)
         ...workerMetadata // Overwrite with worker-parsed fields, worker data takes precedence for GGUF fields
     };
@@ -402,7 +402,7 @@ export class LlamaRunner {
 
     // Signal cancellation
     this.abortController.abort();
-
+    
     // NEW: If wllamaInstance exists and has a way to cancel ongoing ops, call it.
     // Wllama's loadModel and runCompletion take AbortSignal directly.
     // This external abortController is for LlamaRunner's own management.
@@ -463,14 +463,14 @@ export class LlamaRunner {
     const handleAbort = () => {
       if (this.isLoadingModel) {
         console.log('Model loading aborted by user (LlamaRunner)');
-
+        
         // REMOVED: Old worker cancellation
         // if (this.worker) {
         //   this.worker.postMessage({
         //     event: workerActions.CANCEL_LOAD
         //   });
         // }
-
+        
         // The AbortSignal passed to wllama.loadModel will handle wllama's internal cancellation.
         this.isLoadingModel = false;
         this.onModelLoadedCallback = null;
@@ -504,7 +504,7 @@ export class LlamaRunner {
       const actualModelId = modelId || (typeof source === 'string' ? source : `${source.name}-${source.size}`);
       this.currentModelId = actualModelId;
       this.currentModelMetadata = null;
-
+      
       let modelDataFromCache: ArrayBuffer | null = null;
       let cachedSpec: ModelSpecification | undefined;
 
@@ -519,11 +519,11 @@ export class LlamaRunner {
             cachedSpec = cachedResult.specification;
             if (cachedSpec) {
                 this.currentModelMetadata = cachedSpec;
-                this.reportProgress({
+          this.reportProgress({
                     stage: LoadingStage.METADATA_PARSE_COMPLETE, // Or a new "METADATA_FROM_CACHE"
-                    message: 'Model metadata loaded from cache',
+            message: 'Model metadata loaded from cache',
                     metadata: cachedSpec
-                });
+          });
             }
         }
       } catch (err) {
@@ -561,12 +561,12 @@ export class LlamaRunner {
           const downloadAndLoadConfig: LoadModelConfig & WllamaDownloadOptions = {
             ...(loadConfig || {}),
             progress_callback: (loaded: number, total: number) => {
-              this.reportProgress({
+            this.reportProgress({
                 stage: LoadingStage.MODEL_FETCH_PROGRESS,
                 loaded,
                 total,
                 message: `Wllama downloading: ${total > 0 ? Math.round((loaded / total) * 100) : 0}%`
-              });
+            });
             },
             // Pass AbortSignal for download if wllama supports it in DownloadOptions (as abort_signal)
             // Based on wllama.d.ts, DownloadOptions takes `abort_signal`
@@ -580,7 +580,7 @@ export class LlamaRunner {
         } else { // Handle File or cached ArrayBuffer source
           let modelBlob: Blob;
           if (modelDataFromCache) { // Data from LlamaRunner's cache
-            this.reportProgress({
+          this.reportProgress({
               stage: LoadingStage.PREPARING_MODEL_DATA,
               message: 'Using cached model data for Wllama',
               loaded: modelDataFromCache.byteLength,
@@ -591,8 +591,8 @@ export class LlamaRunner {
             sourceInfo.fileSize = modelDataFromCache.byteLength;
             sourceInfo.url = cachedSpec?.sourceURL;
           } else { // Source is a File object
-            this.reportProgress({
-              stage: LoadingStage.READING_FROM_FILE,
+                this.reportProgress({
+                  stage: LoadingStage.READING_FROM_FILE,
               message: 'Reading model from file for Wllama'
             });
             // For File objects, we don't need to read it into ArrayBuffer ourselves if wllama.loadModel takes Blob.
@@ -610,23 +610,25 @@ export class LlamaRunner {
             });
           }
 
-          if (abortSignal.aborted) {
-            handleAbort();
-            return;
-          }
-          
-          // For loadModel(Blob[]), progress is not directly applicable for the load itself.
-          // The LoadModelConfig doesn't take a progress_callback here.
-          await this.wllamaInstance.loadModel([modelBlob], loadConfig || {});
-        }
-
         if (abortSignal.aborted) {
           handleAbort();
           return;
         }
 
+          // For loadModel(Blob[]), progress is not directly applicable for the load itself.
+          // The LoadModelConfig doesn't take a progress_callback here.
+          await this.wllamaInstance.loadModel([modelBlob], loadConfig || {});
+        }
+
+            if (abortSignal.aborted) {
+              handleAbort();
+              return;
+            }
+            
         // --- Metadata Handling ---
         const wllamaInternalMeta = this.wllamaInstance.getModelMetadata();
+        console.log("LlamaRunner: wllamaInternalMeta received:", JSON.parse(JSON.stringify(wllamaInternalMeta))); // ADDED: Log the raw metadata from Wllama
+
         if (wllamaInternalMeta) {
           this.currentModelMetadata = this.mapWllamaMetaToModelSpec(wllamaInternalMeta, sourceInfo);
 
@@ -781,7 +783,7 @@ export class LlamaRunner {
           // piece is Uint8Array. tokenCallback expects string.
           this.currentTokenCallback(simpleBufToText(chunk.piece));
         }
-      }
+  }
 
       // Generation completed successfully (finished stream or stopped by nPredict)
       if (this.currentCompletionCallback) {
@@ -858,7 +860,8 @@ export class LlamaRunner {
         architecture: wllamaMeta.meta?.['general.architecture'],
         modelName: wllamaMeta.meta?.['general.name'],
         ggufVersion: wllamaMeta.meta?.['general.version'] ? parseInt(wllamaMeta.meta['general.version'], 10) :
-                       (wllamaMeta.meta?.['gguf.version'] ? parseInt(wllamaMeta.meta['gguf.version'], 10) : undefined),
+                       (wllamaMeta.meta?.['gguf.version'] ? parseInt(wllamaMeta.meta['gguf.version'], 10) :
+                       (wllamaMeta.meta?.['general.quantization_version'] ? parseInt(wllamaMeta.meta['general.quantization_version'], 10) : undefined)),
         quantization: wllamaMeta.meta?.['general.file_type'], // Keep this simple for now
         headCount: wllamaMeta.meta?.['llama.attention.head_count'] ? parseInt(wllamaMeta.meta['llama.attention.head_count'], 10) : undefined,
         headCountKv: wllamaMeta.meta?.['llama.attention.head_count_kv'] ? parseInt(wllamaMeta.meta['llama.attention.head_count_kv'], 10) : undefined,
@@ -891,7 +894,10 @@ export class LlamaRunner {
 
     // Refinement for ggufVersion if it was not found with common keys
     if (spec.ggufVersion === undefined && wllamaMeta.meta) {
-        const versionKey = Object.keys(wllamaMeta.meta).find(k => k.toLowerCase().includes('gguf') && k.toLowerCase().includes('version'));
+        const versionKey = Object.keys(wllamaMeta.meta).find(k => 
+            k.toLowerCase().includes('version') && 
+            (k.toLowerCase().includes('gguf') || k.toLowerCase().includes('general.quantization')) // Adjusted fallback
+        );
         if (versionKey && wllamaMeta.meta[versionKey]) {
             const parsedVersion = parseInt(wllamaMeta.meta[versionKey], 10);
             if (!isNaN(parsedVersion)) {
@@ -906,8 +912,8 @@ export class LlamaRunner {
         const quantKey = Object.keys(wllamaMeta.meta).find(k => k.endsWith('.quantization_type') && !k.startsWith('general.'));
         if (quantKey && wllamaMeta.meta[quantKey]) {
             spec.quantization = wllamaMeta.meta[quantKey];
-        }
     }
+  }
 
     return spec;
   }
